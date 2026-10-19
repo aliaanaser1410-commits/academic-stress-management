@@ -232,7 +232,7 @@ def tr(value):
 
 def html(markup):
     """Render HTML, translating visible content when Arabic is selected."""
-    cleaned = "\\n".join(line.strip() for line in markup.strip().splitlines())
+    cleaned = "\n".join(line.strip() for line in markup.strip().splitlines())
     cleaned = tr(cleaned)
     st.markdown(cleaned, unsafe_allow_html=True)
 
@@ -820,12 +820,14 @@ elif current_step == 3:
 
     timetable_df = pd.DataFrame(timetable)
     if st.session_state.language == "Arabic":
-        timetable_df = timetable_df.rename(columns={
-            "Time": "الوقت", "Activity": "النشاط", "Duration": "المدة"
-        })
+        # الأول نترجم محتوى عمود Activity وهو لسه اسمه "Activity"
         timetable_df["Activity"] = timetable_df["Activity"].map(
             lambda x: x.replace("Study: ", "مذاكرة: ").replace("Short break", "استراحة قصيرة").replace("Long break / meal", "استراحة طويلة / وجبة")
         )
+        # وبعد كده نغير أسماء الأعمدة
+        timetable_df = timetable_df.rename(columns={
+            "Time": "الوقت", "Activity": "النشاط", "Duration": "المدة"
+        })
     st.dataframe(timetable_df, hide_index=True)
 
     if current_time > 22:
