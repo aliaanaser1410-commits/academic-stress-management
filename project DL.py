@@ -10,16 +10,13 @@ from keras.layers import Dense, Flatten, Input, Conv2D, MaxPool2D
 from keras import optimizers
 from sklearn.utils import shuffle
 
-# عنوان الموقع وتنسيق الصفحة
 st.set_page_config(page_title="Fruit Classification Dashboard", page_icon="🍎", layout="centered")
 
 st.title("🍎 Fruit & Plant Classification System")
-st.write("هذا التطبيق يقوم بتدريب نموذج ذكاء اصطناعي (CNN) لتصنيف صور الفواكه والخضروات، ويتيح لك تجربة الصور مباشرة!")
+st.write("ارفع صورة أي فاكهة أو خضار والتطبيق هيتوقع نوعها!")
 
-# مسار البيانات (يمكن تعديله حسب مسار الملفات على السيرفر أو GitHub)
 path = 'ColorfulOriginal'
 Foldernames = ['Banana', 'Carrot', 'Corn', 'Apple', 'Tomato', 'Strawberry', 'Potato', 'Plum', 'Pear', 'Orange', 'Lemon', 'LadyFinger']
-
 im_size = 50
 
 @st.cache_resource
@@ -43,14 +40,12 @@ def load_and_train_model():
 
     X, Y = shuffle(Plant_images, Plant_types, random_state=42)
 
-    # تقسيم البيانات
     Pr = preprocessing.LabelEncoder()
     Yencoded = Pr.fit_transform(Y)
     encoded_classes = Pr.classes_
 
     X_train, X_test, Y_train, Y_test = train_test_split(X, Yencoded, test_size=0.2)
 
-    # بناء نموذج الـ CNN
     model = Sequential([
         Input(shape=(im_size, im_size, 3)),
         Conv2D(filters=32, kernel_size=(3, 3), strides=1, padding='same', activation='relu'),
@@ -62,26 +57,20 @@ def load_and_train_model():
 
     opt = optimizers.Adam(learning_rate=0.001)
     model.compile(optimizer=opt, loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-
-    # التدريب
     model.fit(X_train, Y_train, validation_data=(X_test, Y_test), epochs=5, batch_size=32, verbose=0)
     
     loss, acc = model.evaluate(X_test, Y_test, verbose=0)
     return model, encoded_classes, acc
 
-# تنبيه للمستخدم أثناء تدريب النموذج
-with st.spinner("جاري تحميل البيانات وتدريب نموذج الذكاء الاصطناعي، برجاء الانتظار قليلاً..."):
+with st.spinner("جاري تحميل النموذج والبيانات..."):
     model, encoded_classes, acc = load_and_train_model()
 
 st.success(f"Model Accuracy: {acc * 100:.2f}%")
 st.markdown("---")
 
-# رفع صورة جديدة للتنبؤ
-st.subheader("🔍 جرب التصنيف بنفسك")
-uploaded_file = st.file_uploader("اختر صورة (JPG, PNG)", type=["jpg", "png", "jpeg"])
+uploaded_file = st.file_uploader("اختر صورة فاكهة للتنبؤ بها", type=["jpg", "png", "jpeg"])
 
 if uploaded_file is not None:
-    # قراءة وعرض الصورة
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     image = cv2.imdecode(file_bytes, 1)
     
@@ -99,5 +88,5 @@ if uploaded_file is not None:
             confidence = np.max(Ypred) * 100
             
             st.markdown("### النتيجة:")
-            st.success(f"النوع المتوقع: {predicted_name}")
-            st.info(f"نسبة الثقة: {confidence:.2f}%")
+            st.success(f"النوع المتوقع: **{predicted_name}**")
+            st.info(f"نسبة الثقة: **{confidence:.2f}%**")
