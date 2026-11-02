@@ -1,1746 +1,1416 @@
 
 
 import streamlit as st
-import pandas as pd
 import sqlite3
-import os
-import io
-import math
-import re
+import json
+from pathlib import Path
 from datetime import date, datetime, timedelta
 
-try:
-    import fitz
-except ImportError:
-    fitz = None
+import pandas as pd
 
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
-
-
-# =====================================================
-# 1. CONFIGURATION
-# =====================================================
+# =========================================================
+# STUDY BUDDY - SMART STUDENT EXPERT SYSTEM
+# =========================================================
 
 st.set_page_config(
-    page_title="Smart Student Assistant",
+    page_title="Study Buddy | Expert System",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-DB_PATH = "student_assistant.db"
+DB_PATH = Path(__file__).with_name("study_buddy.db")
 
-DAYS = [
-    "Saturday", "Sunday", "Monday", "Tuesday",
-    "Wednesday", "Thursday", "Friday"
-]
+# =========================================================
+# DATABASE
+# =========================================================
 
-
-# =====================================================
-# 2. DATABASE CONNECTION
-# =====================================================
-
-def db_connection():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+def connect():
+    con = sqlite3.connect(DB_PATH, check_same_thread=False)
+    con.row_factory = sqlite3.Row
+    return con
 
 
-def execute(query, params=()):
-    with db_connection() as conn:
-        conn.execute(query, params)
-
-
-def fetch_one(query, params=()):
-    with db_connection() as conn:
-        return conn.execute(query, params).fetchone()
-
-
-def fetch_all(query, params=()):
-    with db_connection() as conn:
-        return conn.execute(query, params).fetchall()
-
-
-# =====================================================
-# 3. SAFE DATABASE INITIALIZATION & MIGRATION
-# =====================================================
-
-def initialize_database():
-
-    with db_connection() as conn:
-
-        cur = conn.cursor()
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS profile (
-                id INTEGER PRIMARY KEY,
+def init_database():
+    with connect() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS sb_settings (
+                id INTEGER PRIMARY KEY CHECK(id=1),
                 name TEXT DEFAULT '',
-                college TEXT DEFAULT '',
-                major TEXT DEFAULT '',
-                year TEXT DEFAULT '',
-                daily_hours REAL DEFAULT 4
+                accent TEXT DEFAULT '#8956E8',
+                mode TEXT DEFAULT 'Dark',
+                language TEXT DEFAULT 'English',
+                daily_hours REAL DEFAULT 3
             )
         """)
 
-        cur.execute("""
-            INSERT OR IGNORE INTO profile(id)
-            VALUES(1)
-        """)
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS subjects (
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS sb_subjects (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE,
-                difficulty TEXT,
-                priority TEXT,
+                name TEXT NOT NULL,
+                difficulty INTEGER,
+                priority INTEGER,
                 exam_date TEXT
             )
         """)
 
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS materials (
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS sb_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT,
-                subject TEXT,
-                content TEXT,
-                created TEXT
-            )
-        """)
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS timetable (
-                id INTEGER PRIMARY KEY,
-                content TEXT,
-                confirmed INTEGER DEFAULT 0
-            )
-        """)
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS xp (
-                event TEXT PRIMARY KEY,
-                points INTEGER
-            )
-        """)
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS stress_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created TEXT,
-                score REAL,
-                stress INTEGER,
-                sleep REAL,
-                focus INTEGER,
-                workload INTEGER
-            )
-        """)
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                id INTEGER PRIMARY KEY,
-                language TEXT DEFAULT 'English',
-                theme TEXT DEFAULT 'Dark'
-            )
-        """)
-
-        cur.execute("""
-            INSERT OR IGNORE INTO settings(id)
-            VALUES(1)
-        """)
-
-        # Repair old sessions tables without deleting existing data.
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                day TEXT,
                 session_date TEXT,
-                start_time TEXT,
                 subject TEXT,
-                duration REAL DEFAULT 0.5,
+                start_time TEXT,
+                duration REAL,
                 status TEXT DEFAULT 'Pending'
             )
         """)
 
-        cur.execute("PRAGMA table_info(sessions)")
-        columns = {
-            row[1] for row in cur.fetchall()
-        }
-
-        required_columns = {
-            "id": "INTEGER",
-            "day": "TEXT",
-            "session_date": "TEXT",
-            "start_time": "TEXT",
-            "subject": "TEXT",
-            "duration": "REAL DEFAULT 0.5",
-            "status": "TEXT DEFAULT 'Pending'"
-        }
-
-        for column, column_type in required_columns.items():
-
-            if column not in columns:
-                cur.execute(
-                    f"ALTER TABLE sessions ADD COLUMN "
-                    f"{column} {column_type}"
-                )
-
-        # Fill IDs for old databases where id was absent or empty.
-        cur.execute("""
-            UPDATE sessions
-            SET id = rowid
-            WHERE id IS NULL
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS sb_assessments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT,
+                stress INTEGER,
+                sleep REAL,
+                focus INTEGER,
+                workload INTEGER,
+                exam_days INTEGER,
+                risk TEXT,
+                rules TEXT
+            )
         """)
 
-        # Recover values from common legacy column names.
-        cur.execute("PRAGMA table_info(sessions)")
-        columns = {
-            row[1] for row in cur.fetchall()
-        }
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS sb_materials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT,
+                subject TEXT,
+                content TEXT,
+                uploaded_at TEXT
+            )
+        """)
 
-        legacy_mappings = {
-            "day": ["weekday", "study_day"],
-            "session_date": ["date", "study_date"],
-            "start_time": ["start", "time", "start_at"],
-            "subject": ["subject_name", "course"],
-            "duration": ["hours", "duration_hours"],
-            "status": ["state"]
-        }
-
-        for target, alternatives in legacy_mappings.items():
-
-            for old_column in alternatives:
-
-                if old_column in columns:
-
-                    cur.execute(
-                        f"""
-                        UPDATE sessions
-                        SET {target} = {old_column}
-                        WHERE {target} IS NULL
-                        """
-                    )
-
-        conn.commit()
+        con.execute("INSERT OR IGNORE INTO sb_settings(id) VALUES(1)")
 
 
-initialize_database()
+init_database()
 
-
-# =====================================================
-# 4. SESSION STATE
-# =====================================================
-
-defaults = {
-    "page": "Home",
-    "chat_history": []
-}
-
-for key, value in defaults.items():
-
-    if key not in st.session_state:
-        st.session_state[key] = value
-
-
-# =====================================================
-# 5. SETTINGS & LANGUAGE
-# =====================================================
 
 def get_settings():
-
-    row = fetch_one("""
-        SELECT language, theme
-        FROM settings
-        WHERE id=1
-    """)
-
-    return row or ("English", "Dark")
+    with connect() as con:
+        return dict(con.execute(
+            "SELECT * FROM sb_settings WHERE id=1"
+        ).fetchone())
 
 
-LANGUAGE, THEME = get_settings()
-
-ARABIC = LANGUAGE == "العربية"
-DARK = THEME == "Dark"
-
-
-def t(en, ar):
-    return ar if ARABIC else en
-
-
-# =====================================================
-# 6. PROFILE & DATA HELPERS
-# =====================================================
-
-def get_profile():
-
-    row = fetch_one("""
-        SELECT name, college, major, year, daily_hours
-        FROM profile
-        WHERE id=1
-    """)
-
-    if not row:
-        return {
-            "name": "",
-            "college": "",
-            "major": "",
-            "year": "",
-            "daily_hours": 4
-        }
-
-    return {
-        "name": row[0] or "",
-        "college": row[1] or "",
-        "major": row[2] or "",
-        "year": row[3] or "",
-        "daily_hours": row[4] or 4
-    }
+def save_settings(name, accent, mode, language, hours):
+    with connect() as con:
+        con.execute("""
+            UPDATE sb_settings
+            SET name=?, accent=?, mode=?, language=?, daily_hours=?
+            WHERE id=1
+        """, (name, accent, mode, language, hours))
 
 
-def get_subjects():
-
-    rows = fetch_all("""
-        SELECT id, name, difficulty, priority, exam_date
-        FROM subjects
-        ORDER BY id
-    """)
-
-    return pd.DataFrame(
-        rows,
-        columns=[
-            "ID", "Subject", "Difficulty",
-            "Priority", "Exam Date"
-        ]
-    )
+def query(sql, params=()):
+    with connect() as con:
+        return [dict(r) for r in con.execute(sql, params).fetchall()]
 
 
-def get_sessions():
-
-    rows = fetch_all("""
-        SELECT id, day, session_date, start_time,
-               subject, duration, status
-        FROM sessions
-        ORDER BY session_date, start_time
-    """)
-
-    return pd.DataFrame(
-        rows,
-        columns=[
-            "ID", "Day", "Date", "Start",
-            "Subject", "Hours", "Status"
-        ]
-    )
+def execute(sql, params=()):
+    with connect() as con:
+        cur = con.execute(sql, params)
+        return cur.lastrowid
 
 
-def get_materials():
+settings = get_settings()
 
-    return fetch_all("""
-        SELECT id, filename, subject, content, created
-        FROM materials
-        ORDER BY id DESC
-    """)
+# =========================================================
+# THEME SETTINGS
+# =========================================================
 
+THEMES = {
+    "Purple": "#8956E8",
+    "Blue": "#3988E8",
+    "Pink": "#DB65A6",
+    "Green": "#269C7A",
+    "Orange": "#E58B42",
+    "Teal": "#269CA5",
+    "Red": "#D95765",
+    "Indigo": "#5965D9"
+}
 
-# =====================================================
-# 7. XP SYSTEM
-# =====================================================
+accent = settings["accent"]
+mode = settings["mode"]
 
-def add_xp(event, points=20):
+dark = mode == "Dark"
 
-    execute("""
-        INSERT OR IGNORE INTO xp(event, points)
-        VALUES(?, ?)
-    """, (event, points))
-
-
-def get_xp():
-
-    row = fetch_one("""
-        SELECT COALESCE(SUM(points), 0)
-        FROM xp
-    """)
-
-    return int(row[0]) if row else 0
-
-
-def get_level(points):
-
-    levels = [
-        (0, "Beginner", "🐣"),
-        (100, "Focused Learner", "🐥"),
-        (300, "Study Champion", "🦉"),
-        (600, "Study Master", "🦅")
-    ]
-
-    current = levels[0]
-
-    for level in levels:
-        if points >= level[0]:
-            current = level
-
-    next_level = next(
-        (item for item in levels if item[0] > points),
-        None
-    )
-
-    return current, next_level
-
-
-# =====================================================
-# 8. DESIGN
-# =====================================================
-
-BG = "#101827" if DARK else "#F3F6FC"
-PANEL = "#1B293B" if DARK else "#FFFFFF"
-FG = "#F4F6FC" if DARK else "#172033"
-MUTED = "#AAB7C8" if DARK else "#68758A"
+background = "#171426" if dark else "#F6F4FB"
+surface = "#211D35" if dark else "#FFFFFF"
+text_color = "#F7F3FF" if dark else "#26213A"
+muted = "#B8B1CA" if dark else "#777187"
+border = "#39324F" if dark else "#E7E1F0"
 
 st.markdown(f"""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Cairo:wght@400;600;700;800&display=swap');
 
-.stApp {{
-    background: {BG};
-    color: {FG};
+html, body, [class*="css"] {{
+    font-family: Inter, Cairo, sans-serif;
 }}
 
-[data-testid="stSidebar"] {{
-    background: {PANEL};
+.stApp {{
+    background: {background};
+    color: {text_color};
 }}
 
 .block-container {{
+    padding-top: 1.6rem;
     max-width: 1450px;
-    padding-top: 1.5rem;
 }}
 
-h1, h2, h3, h4, p, label {{
-    color: {FG};
+section[data-testid="stSidebar"] {{
+    background: linear-gradient(180deg,#17132B,#282047);
+}}
+
+section[data-testid="stSidebar"] * {{
+    color: #FFFFFF !important;
+}}
+
+section[data-testid="stSidebar"] .stButton button {{
+    background: rgba(255,255,255,.07);
+    border: 1px solid rgba(255,255,255,.10);
+    color: white;
+    border-radius: 12px;
+    text-align: left;
+}}
+
+section[data-testid="stSidebar"] .stButton button:hover {{
+    background: {accent};
+}}
+
+.stButton button[kind="primary"] {{
+    background: {accent};
+    border: none;
+    color: white;
+    border-radius: 12px;
 }}
 
 .hero {{
-    background: linear-gradient(120deg, #253A70, #7057C8);
+    background: linear-gradient(115deg,#39256F,{accent});
     padding: 30px;
-    border-radius: 22px;
-    margin-bottom: 22px;
+    border-radius: 24px;
     color: white;
+    margin-bottom: 24px;
 }}
 
-.hero h1, .hero p {{
-    color: white !important;
+.hero h1 {{
+    color: white;
+    font-size: 32px;
 }}
 
-.robot-card {{
-    background: linear-gradient(130deg, #30245F, #6554B8);
-    padding: 16px;
+.hero p {{
+    color: #EEE7FF;
+}}
+
+.card {{
+    background: {surface};
+    border: 1px solid {border};
     border-radius: 18px;
-    margin-bottom: 15px;
-    color: white;
-}}
-
-.robot-card h3, .robot-card p {{
-    color: white !important;
-}}
-
-.feature-card {{
-    background: {PANEL};
-    border: 1px solid rgba(140,150,180,.18);
     padding: 20px;
-    border-radius: 17px;
+    margin-bottom: 12px;
 }}
 
-.footer {{
-    text-align: center;
-    color: {MUTED};
-    padding: 25px;
-    font-size: 12px;
+.metric {{
+    font-size: 30px;
+    font-weight: 800;
+    color: {accent};
 }}
 
-div.stButton > button {{
-    border-radius: 11px;
-    min-height: 42px;
-    font-weight: 600;
+.muted {{
+    color: {muted};
+    font-size: 13px;
 }}
 
-[data-testid="stMetric"] {{
-    background: {PANEL};
-    padding: 14px;
+.rule {{
+    background: {surface};
+    border: 1px solid {border};
+    border-left: 4px solid {accent};
     border-radius: 14px;
+    padding: 17px;
+    margin: 10px 0;
+}}
+
+h1, h2, h3 {{
+    color: {text_color};
 }}
 
 </style>
 """, unsafe_allow_html=True)
 
+# =========================================================
+# EXPERT SYSTEM - KNOWLEDGE BASE
+# =========================================================
 
-# =====================================================
-# 9. ROBOT
-# =====================================================
+KNOWLEDGE_BASE = [
 
-ROBOT = """
-<svg width="70" height="70" viewBox="0 0 100 100"
-xmlns="http://www.w3.org/2000/svg">
-<path d="M50 7V18" stroke="#D8D2FF" stroke-width="5"/>
-<circle cx="50" cy="7" r="5" fill="#A99CFF"/>
-<rect x="16" y="22" width="68" height="57"
-rx="19" fill="#F2F3FF"/>
-<rect x="23" y="30" width="54" height="40"
-rx="13" fill="#6554B8"/>
-<circle cx="39" cy="49" r="5" fill="#8EF0E0"/>
-<circle cx="61" cy="49" r="5" fill="#8EF0E0"/>
-<path d="M40 60 Q50 68 60 60"
-stroke="white" stroke-width="3" fill="none"/>
-<rect x="7" y="43" width="9" height="20"
-rx="4" fill="#B8B0FF"/>
-<rect x="84" y="43" width="9" height="20"
-rx="4" fill="#B8B0FF"/>
-<rect x="31" y="78" width="12" height="12"
-rx="5" fill="#B8B0FF"/>
-<rect x="57" y="78" width="12" height="12"
-rx="5" fill="#B8B0FF"/>
-</svg>
-"""
+    {
+        "id": "R01",
+        "name": "High Stress",
+        "condition": lambda x:
+            x["stress"] >= 8,
+        "recommendation":
+            "خففي ضغط المذاكرة وابدئي بالمهام الأكثر أهمية.",
+        "reason":
+            "مستوى التوتر مرتفع.",
+        "action":
+            "جلسات قصيرة مع فواصل منتظمة."
+    },
+
+    {
+        "id": "R02",
+        "name": "Low Sleep",
+        "condition": lambda x:
+            x["sleep"] < 6,
+        "recommendation":
+            "حاولي تحسين ساعات النوم قبل زيادة ساعات المذاكرة.",
+        "reason":
+            "عدد ساعات النوم أقل من المستوى المستهدف.",
+        "action":
+            "تجنبي السهر الطويل وخففي حمل اليوم."
+    },
+
+    {
+        "id": "R03",
+        "name": "Low Focus",
+        "condition": lambda x:
+            x["focus"] <= 3,
+        "recommendation":
+            "ابدئي بمهمة صغيرة وسهلة لتستعيدي تركيزك.",
+        "reason":
+            "مستوى التركيز منخفض.",
+        "action":
+            "جلسة 30 دقيقة ثم راحة 10 دقائق."
+    },
+
+    {
+        "id": "R04",
+        "name": "High Workload",
+        "condition": lambda x:
+            x["workload"] >= 8,
+        "recommendation":
+            "رتبي المهام حسب الأولوية ولا تحاولي إنهاء كل شيء مرة واحدة.",
+        "reason":
+            "حجم المهام مرتفع.",
+        "action":
+            "اختاري أهم 2 أو 3 مهام."
+    },
+
+    {
+        "id": "R05",
+        "name": "Exam Approaching",
+        "condition": lambda x:
+            x["exam_days"] <= 3,
+        "recommendation":
+            "ركزي على المادة التي اقترب موعد امتحانها.",
+        "reason":
+            "يوجد امتحان خلال ثلاثة أيام أو أقل.",
+        "action":
+            "مراجعة وحل أسئلة وتحديد نقاط الضعف."
+    },
+
+    {
+        "id": "R06",
+        "name": "Good Study Condition",
+        "condition": lambda x:
+            x["stress"] <= 5
+            and x["sleep"] >= 7
+            and x["focus"] >= 6,
+        "recommendation":
+            "حالتك مناسبة لجلسات مذاكرة منتظمة.",
+        "reason":
+            "النوم والتركيز جيدان والتوتر منخفض نسبيًا.",
+        "action":
+            "ابدئي بالمواد الأصعب."
+    }
+]
 
 
-# =====================================================
-# 10. SIDEBAR
-# =====================================================
+def inference_engine(facts):
+    """
+    Forward-style rule evaluation:
+    Student facts -> IF conditions -> THEN conclusions
+    """
+
+    matched_rules = []
+
+    for rule in KNOWLEDGE_BASE:
+        if rule["condition"](facts):
+            matched_rules.append(rule)
+
+    if not matched_rules:
+        matched_rules.append({
+            "id": "R00",
+            "name": "General Recommendation",
+            "recommendation":
+                "قسمي وقتك إلى جلسات واضحة وابدئي بأعلى مادة في الأولوية.",
+            "reason":
+                "لم تنطبق قاعدة متخصصة على بيانات التقييم الحالية.",
+            "action":
+                "حددي هدفًا صغيرًا لكل جلسة."
+        })
+
+    return matched_rules
+
+
+def calculate_risk(stress, sleep, focus, workload):
+
+    score = (
+        stress * 0.35
+        + (10 - min(sleep, 10)) * 0.20
+        + (10 - focus) * 0.20
+        + workload * 0.25
+    )
+
+    if score >= 7:
+        return "High"
+
+    if score >= 4.5:
+        return "Moderate"
+
+    return "Low"
+
+
+# =========================================================
+# SESSION STATE
+# =========================================================
+
+if "page" not in st.session_state:
+    st.session_state.page = "Home"
+
+if "last_result" not in st.session_state:
+    st.session_state.last_result = None
+
+if "chat" not in st.session_state:
+    st.session_state.chat = [
+        {
+            "role": "assistant",
+            "content": "أهلًا! أنا Study Buddy 🤖 اسأليني عن المذاكرة أو التوتر أو خطتك الدراسية."
+        }
+    ]
+
+
+# =========================================================
+# SIDEBAR NAVIGATION
+# =========================================================
+
+PAGES = [
+    ("🏠", "Home"),
+    ("👤", "Student Profile"),
+    ("🧠", "Expert Assessment"),
+    ("📚", "Knowledge Base"),
+    ("📖", "My Materials"),
+    ("🗓️", "Smart Planner"),
+    ("🤖", "AI Study Buddy"),
+    ("📊", "My Progress"),
+    ("💜", "Stress Management"),
+    ("⚙️", "Settings")
+]
 
 with st.sidebar:
 
-    st.markdown(
-        f"""
-        <div class="robot-card">
-            {ROBOT}
-            <h3>AI Study Buddy</h3>
-            <p>Your academic companion 🤖</p>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    st.markdown("""
+    <div style="text-align:center;padding:15px">
+        <div style="font-size:55px">🤖</div>
+        <h2 style="color:white">Study Buddy</h2>
+        <p style="color:#C9BCEB">EXPERT SYSTEM</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    if st.button(
-        t("💬 Open Study Buddy", "💬 افتحي مساعد الدراسة"),
-        use_container_width=True,
-        type="primary"
-    ):
+    st.markdown("---")
 
-        st.session_state.page = "Chat"
-        st.rerun()
+    for icon, label in PAGES:
 
-    st.divider()
+        if st.button(
+            f"{icon}  {label}",
+            key="nav_" + label,
+            use_container_width=True
+        ):
+            st.session_state.page = label
+            st.rerun()
 
-    navigation = {
-        "🏠 Home": "Home",
-        "👤 Student Profile": "Profile",
-        "📂 Upload & Analyze": "Upload",
-        "📚 My Materials": "Materials",
-        "🗓️ Academic Timetable": "Timetable",
-        "📅 Smart Weekly Planner": "Planner",
-        "📈 My Progress": "Progress",
-        "🧠 Stress Management": "Stress",
-        "💡 Help & Guide": "Help",
-        "⚙️ Settings": "Settings",
-        "🤖 AI Study Buddy": "Chat"
-    }
+    st.markdown("---")
 
-    if ARABIC:
-
-        navigation = {
-            "🏠 الرئيسية": "Home",
-            "👤 الملف الشخصي": "Profile",
-            "📂 رفع وتحليل الملفات": "Upload",
-            "📚 ملفاتي الدراسية": "Materials",
-            "🗓️ الجدول الأكاديمي": "Timetable",
-            "📅 المخطط الأسبوعي": "Planner",
-            "📈 إنجازاتي": "Progress",
-            "🧠 إدارة التوتر": "Stress",
-            "💡 المساعدة": "Help",
-            "⚙️ الإعدادات": "Settings",
-            "🤖 مساعد الدراسة": "Chat"
-        }
-
-    labels = list(navigation.keys())
-
-    current = next(
-        (
-            label for label, value in navigation.items()
-            if value == st.session_state.page
-        ),
-        labels[0]
-    )
-
-    selected = st.radio(
-        "Navigation",
-        labels,
-        index=labels.index(current),
-        label_visibility="collapsed"
-    )
-
-    st.session_state.page = navigation[selected]
+    st.caption("Your Personal Academic Assistant")
+    st.caption("Knowledge Base • Inference Engine")
 
 
 page = st.session_state.page
 
+# =========================================================
+# GENERAL DATA
+# =========================================================
 
-# =====================================================
-# 11. FILE EXTRACTION
-# =====================================================
+subjects = query(
+    "SELECT * FROM sb_subjects ORDER BY priority DESC"
+)
 
-def extract_pdf(uploaded_file):
+sessions = query(
+    "SELECT * FROM sb_sessions ORDER BY session_date,start_time"
+)
 
-    if fitz is None:
-        raise RuntimeError(
-            "PyMuPDF is missing. Add it to requirements.txt."
-        )
+completed = sum(
+    1 for s in sessions
+    if s["status"] == "Completed"
+)
 
-    document = fitz.open(
-        stream=uploaded_file.getvalue(),
-        filetype="pdf"
-    )
+pending = sum(
+    1 for s in sessions
+    if s["status"] != "Completed"
+)
 
-    pages = []
+study_hours = sum(
+    float(s["duration"])
+    for s in sessions
+    if s["status"] == "Completed"
+)
 
-    for number, page in enumerate(document, start=1):
+progress = (
+    completed / len(sessions)
+    if sessions else 0
+)
 
-        content = page.get_text("text").strip()
-
-        if not content:
-            content = (
-                "No selectable text found on this page. "
-                "This may be a scanned page."
-            )
-
-        pages.append(
-            f"[Page {number}]\n{content}"
-        )
-
-    document.close()
-
-    return "\n\n".join(pages)
-
-
-# =====================================================
-# 12. HOME
-# =====================================================
+# =========================================================
+# HOME DASHBOARD
+# =========================================================
 
 if page == "Home":
 
-    profile = get_profile()
-    subjects = get_subjects()
-    sessions = get_sessions()
+    name = settings["name"] or "Student"
 
-    xp = get_xp()
-    level, next_level = get_level(xp)
-
-    name = profile["name"]
-
-    greeting = (
-        f"Welcome back, {name}!"
-        if name else "Welcome to your study workspace!"
-    )
-
-    if ARABIC:
-        greeting = (
-            f"أهلاً بعودتك، {name}!"
-            if name else "أهلاً بك في مساعدك الدراسي الذكي!"
-        )
-
-    st.markdown(
-        f"""
-        <div class="hero">
-            <h1>🎓 {greeting}</h1>
-            <p>{t(
-                "Organize your study life and take care of yourself.",
-                "نظّمي مذاكرتك واهتمي بنفسك."
-            )}</p>
+    st.markdown(f"""
+    <div class="hero">
+        <div style="font-size:13px">
+            YOUR PERSONAL ACADEMIC EXPERT SYSTEM
         </div>
-        """,
-        unsafe_allow_html=True
-    )
+        <h1>Welcome back, {name} 👋</h1>
+        <p>Your study journey, organized and guided by expert rules.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    a, b, c, d = st.columns(4)
+    c1, c2, c3, c4 = st.columns(4)
 
-    a.metric(t("📚 Subjects", "📚 المواد"), len(subjects))
-    b.metric(t("⏰ Daily hours", "⏰ ساعات يومية"),
-             f"{profile['daily_hours']} h")
-    c.metric(t("📅 Sessions", "📅 الجلسات"), len(sessions))
-    d.metric("⭐ XP", xp)
+    metrics = [
+        ("📚 Subjects", len(subjects)),
+        ("✅ Completed", completed),
+        ("⏳ Pending", pending),
+        ("⏱️ Study Hours", f"{study_hours:g}h")
+    ]
 
-    st.subheader(t("Your Study Buddy", "مساعدك الدراسي"))
+    for col, (label, value) in zip(
+        [c1, c2, c3, c4], metrics
+    ):
+        with col:
+            st.markdown(f"""
+            <div class="card">
+                <div class="muted">{label}</div>
+                <div class="metric">{value}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-    st.markdown(
-        f"""
-        <div class="feature-card">
-            <h2>{level[2]} {level[1]}</h2>
-            <p>{t(
-                "Complete your sessions to level up.",
-                "أنجزي جلسات المذاكرة لتطوير مستوى مساعدك."
-            )}</p>
+    left, right = st.columns([1.4, 1])
+
+    with left:
+
+        st.markdown("### 📈 Study Progress")
+
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+
+        st.progress(progress)
+
+        st.write(f"**{progress * 100:.0f}% Completed**")
+
+        st.caption(
+            "Your progress is based on completed study sessions."
+        )
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown("### ⚡ Quick Actions")
+
+        a, b, c = st.columns(3)
+
+        with a:
+            if st.button("🧠 Assessment", use_container_width=True):
+                st.session_state.page = "Expert Assessment"
+                st.rerun()
+
+        with b:
+            if st.button("🗓️ Planner", use_container_width=True):
+                st.session_state.page = "Smart Planner"
+                st.rerun()
+
+        with c:
+            if st.button("🤖 Chat", use_container_width=True):
+                st.session_state.page = "AI Study Buddy"
+                st.rerun()
+
+    with right:
+
+        st.markdown("### 🔔 Upcoming Tasks")
+
+        upcoming = [
+            s for s in sessions
+            if s["session_date"] >= date.today().isoformat()
+            and s["status"] != "Completed"
+        ][:5]
+
+        if upcoming:
+
+            for s in upcoming:
+
+                st.markdown(f"""
+                <div class="card">
+                    <b>{s["subject"]}</b>
+                    <div class="muted">
+                        {s["session_date"]} · {s["start_time"]}
+                        · {s["duration"]}h
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        else:
+            st.info("No upcoming tasks. Build your study plan!")
+
+    st.markdown("### 🧠 How the Expert System Works")
+
+    a, b, c = st.columns(3)
+
+    with a:
+        st.markdown("""
+        <div class="card">
+            <h3>📚 Knowledge Base</h3>
+            <p class="muted">
+            Stores expert IF–THEN rules about studying and stress.
+            </p>
         </div>
-        """,
-        unsafe_allow_html=True
-    )
+        """, unsafe_allow_html=True)
 
-    if next_level:
+    with b:
+        st.markdown("""
+        <div class="card">
+            <h3>🧠 Inference Engine</h3>
+            <p class="muted">
+            Matches student facts against the knowledge base.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
-        progress = (
-            (xp - level[0])
-            / (next_level[0] - level[0])
-        )
-
-        st.progress(min(1.0, progress))
-        st.caption(f"{next_level[0] - xp} XP to {next_level[1]}")
-
-    st.subheader(t("Quick Access", "وصول سريع"))
-
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        if st.button(t("📂 Upload Files", "📂 رفع الملفات"),
-                     use_container_width=True):
-            st.session_state.page = "Upload"
-            st.rerun()
-
-    with c2:
-        if st.button(t("📅 Weekly Planner", "📅 الجدول الأسبوعي"),
-                     use_container_width=True):
-            st.session_state.page = "Planner"
-            st.rerun()
-
-    with c3:
-        if st.button(t("🤖 Study Buddy", "🤖 مساعد الدراسة"),
-                     use_container_width=True):
-            st.session_state.page = "Chat"
-            st.rerun()
-
-    if not sessions.empty:
-
-        st.subheader(t("Your Current Plan", "خطتك الحالية"))
-
-        st.dataframe(
-            sessions.drop(columns=["ID"]),
-            use_container_width=True,
-            hide_index=True
-        )
+    with c:
+        st.markdown("""
+        <div class="card">
+            <h3>💡 Explanation</h3>
+            <p class="muted">
+            Explains which rules were activated and why.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
 
-# =====================================================
-# 13. STUDENT PROFILE
-# =====================================================
+# =========================================================
+# STUDENT PROFILE
+# =========================================================
 
-elif page == "Profile":
+elif page == "Student Profile":
 
-    st.title("👤 " + t("Student Profile", "الملف الشخصي"))
+    st.title("👤 Student Profile")
 
-    p = get_profile()
+    st.write("Manage your academic information.")
 
     with st.form("profile_form"):
 
         name = st.text_input(
-            t("Student Name", "اسم الطالب"),
-            p["name"]
+            "Student Name",
+            settings["name"]
         )
 
-        college = st.text_input(
-            t("University / College", "الجامعة / الكلية"),
-            p["college"]
+        hours = st.number_input(
+            "Daily Study Hours",
+            min_value=0.5,
+            max_value=16.0,
+            value=float(settings["daily_hours"]),
+            step=0.5
         )
 
-        major = st.text_input(
-            t("Major", "التخصص"),
-            p["major"]
+        language = st.selectbox(
+            "Language",
+            ["English", "العربية"],
+            index=0 if settings["language"] == "English" else 1
         )
 
-        years = [
-            "1st year", "2nd year",
-            "3rd year", "4th year", "Other"
-        ]
+        if st.form_submit_button("Save Profile", type="primary"):
 
-        year = st.selectbox(
-            t("Academic Year", "السنة الدراسية"),
-            years,
-            index=years.index(p["year"])
-            if p["year"] in years else 0
-        )
-
-        hours = st.slider(
-            t("Daily Study Hours", "ساعات المذاكرة اليومية"),
-            1, 12, int(p["daily_hours"])
-        )
-
-        submitted = st.form_submit_button(
-            t("Save Profile", "حفظ البيانات"),
-            type="primary"
-        )
-
-        if submitted:
-
-            execute("""
-                UPDATE profile
-                SET name=?, college=?, major=?,
-                    year=?, daily_hours=?
-                WHERE id=1
-            """, (name, college, major, year, hours))
-
-            st.success(t("Profile saved!", "تم حفظ البيانات!"))
-
-
-# =====================================================
-# 14. UPLOAD FILES
-# =====================================================
-
-elif page == "Upload":
-
-    st.title("📂 " + t("Upload & Analyze", "رفع وتحليل الملفات"))
-
-    st.info(t(
-        "Upload lecture PDFs and academic timetable PDFs.",
-        "ارفعي ملفات المحاضرات والجداول الأكاديمية بصيغة PDF."
-    ))
-
-    lectures = st.file_uploader(
-        t("Lecture PDFs", "ملفات المحاضرات"),
-        type=["pdf"],
-        accept_multiple_files=True,
-        key="lecture_upload"
-    )
-
-    schedules = st.file_uploader(
-        t("Timetable / Exam PDFs", "ملفات الجدول والامتحانات"),
-        type=["pdf"],
-        accept_multiple_files=True,
-        key="schedule_upload"
-    )
-
-    if st.button(
-        t("🔍 Extract Text", "🔍 استخراج النص"),
-        type="primary",
-        use_container_width=True
-    ):
-
-        selected_files = (
-            [(f, "Lecture") for f in (lectures or [])]
-            + [(f, "Academic Schedule") for f in (schedules or [])]
-        )
-
-        if not selected_files:
-
-            st.warning(t(
-                "Choose files first.",
-                "اختاري الملفات أولاً."
-            ))
-
-        for file, kind in selected_files:
-
-            try:
-
-                content = extract_pdf(file)
-
-                execute("""
-                    INSERT INTO materials
-                    (filename, subject, content, created)
-                    VALUES (?, ?, ?, ?)
-                """, (
-                    file.name,
-                    kind,
-                    content,
-                    datetime.now().isoformat(timespec="minutes")
-                ))
-
-                if kind == "Academic Schedule":
-
-                    execute("""
-                        INSERT INTO timetable(id, content, confirmed)
-                        VALUES(1, ?, 0)
-                        ON CONFLICT(id)
-                        DO UPDATE SET
-                        content=excluded.content,
-                        confirmed=0
-                    """, (content,))
-
-                st.success(file.name + " ✓")
-
-            except Exception as error:
-
-                st.error(f"{file.name}: {error}")
-
-    st.caption(
-        "Scanned PDFs may need OCR before their text can be extracted."
-    )
-
-
-# =====================================================
-# 15. MY MATERIALS
-# =====================================================
-
-elif page == "Materials":
-
-    st.title("📚 " + t("My Materials", "ملفاتي الدراسية"))
-
-    search = st.text_input(
-        t("Search materials", "ابحثي في الملفات")
-    )
-
-    materials = get_materials()
-
-    if not materials:
-
-        st.info(t(
-            "No materials uploaded yet.",
-            "لم يتم رفع ملفات بعد."
-        ))
-
-    for item in materials:
-
-        mid, filename, subject, content, created = item
-
-        if search and search.lower() not in (
-            filename + subject + content
-        ).lower():
-            continue
-
-        with st.expander("📄 " + filename):
-
-            st.caption(f"{subject} · {created}")
-
-            edited = st.text_area(
-                "Extracted Text",
-                content or "",
-                height=250,
-                key=f"material_{mid}"
+            save_settings(
+                name,
+                settings["accent"],
+                settings["mode"],
+                language,
+                hours
             )
 
-            c1, c2 = st.columns(2)
-
-            with c1:
-
-                if st.button(
-                    "Save Corrections",
-                    key=f"save_{mid}"
-                ):
-
-                    execute(
-                        "UPDATE materials SET content=? WHERE id=?",
-                        (edited, mid)
-                    )
-
-                    st.success("Saved.")
-
-            with c2:
-
-                if st.button(
-                    "Delete Material",
-                    key=f"delete_{mid}"
-                ):
-
-                    execute(
-                        "DELETE FROM materials WHERE id=?",
-                        (mid,)
-                    )
-
-                    st.rerun()
+            st.success("Profile saved successfully.")
 
 
-# =====================================================
-# 16. ACADEMIC TIMETABLE
-# =====================================================
+# =========================================================
+# EXPERT ASSESSMENT
+# =========================================================
 
-elif page == "Timetable":
+elif page == "Expert Assessment":
 
-    st.title("🗓️ " + t("Academic Timetable", "الجدول الأكاديمي"))
+    st.title("🧠 Expert Assessment")
 
-    row = fetch_one("""
-        SELECT content, confirmed
-        FROM timetable
-        WHERE id=1
-    """)
+    st.write(
+        "Answer these questions so the expert system can evaluate your condition."
+    )
 
-    if row:
-
-        corrected = st.text_area(
-            t("Review your timetable", "راجعي الجدول"),
-            row[0] or "",
-            height=300
-        )
-
-        if st.button(
-            t("Confirm Timetable", "تأكيد الجدول"),
-            type="primary"
-        ):
-
-            execute("""
-                UPDATE timetable
-                SET content=?, confirmed=1
-                WHERE id=1
-            """, (corrected,))
-
-            st.success(t(
-                "Timetable confirmed.",
-                "تم تأكيد الجدول."
-            ))
-
-        st.warning(t(
-            "The extracted schedule is stored as text. "
-            "Automatic calendar conversion is not enabled.",
-            "يتم حفظ الجدول كنص للمراجعة، "
-            "والتحويل التلقائي لمواعيد التقويم غير مفعّل."
-        ))
-
-    else:
-
-        st.info(t(
-            "Upload your academic timetable first.",
-            "ارفعي الجدول الأكاديمي أولاً."
-        ))
-
-
-# =====================================================
-# 17. SMART WEEKLY PLANNER
-# =====================================================
-
-elif page == "Planner":
-
-    st.title("📅 " + t("Smart Weekly Planner", "المخطط الأسبوعي الذكي"))
-
-    st.caption(t(
-        "Study sessions: 30, 60, 90 or 120 minutes. "
-        "Maximum 3 subjects per day.",
-        "جلسات المذاكرة: 30 أو 60 أو 90 أو 120 دقيقة. "
-        "بحد أقصى 3 مواد يومياً."
-    ))
-
-    with st.form("add_subject", clear_on_submit=True):
-
-        subject_name = st.text_input(
-            t("Subject Name", "اسم المادة")
-        )
+    with st.form("assessment_form"):
 
         c1, c2 = st.columns(2)
 
         with c1:
 
-            difficulty = st.selectbox(
-                t("Difficulty", "الصعوبة"),
-                ["Easy", "Medium", "Hard"]
+            stress = st.slider(
+                "Stress Level",
+                0, 10, 5
+            )
+
+            sleep = st.slider(
+                "Sleep Hours",
+                0.0, 12.0, 7.0, 0.5
+            )
+
+            focus = st.slider(
+                "Focus Level",
+                0, 10, 6
             )
 
         with c2:
 
-            priority = st.selectbox(
-                t("Priority", "الأولوية"),
-                ["Low", "Normal", "High"]
+            workload = st.slider(
+                "Workload Level",
+                0, 10, 5
             )
 
-        exam = st.date_input(
-            t("Exam Date", "تاريخ الامتحان"),
-            value=None
+            exam_days = st.number_input(
+                "Days Until Next Exam",
+                min_value=0,
+                max_value=365,
+                value=7
+            )
+
+        submit = st.form_submit_button(
+            "Run Expert Assessment",
+            type="primary"
         )
 
-        add = st.form_submit_button(
-            t("➕ Add Subject", "➕ إضافة مادة")
+    if submit:
+
+        facts = {
+            "stress": stress,
+            "sleep": sleep,
+            "focus": focus,
+            "workload": workload,
+            "exam_days": int(exam_days)
+        }
+
+        matched = inference_engine(facts)
+
+        risk = calculate_risk(
+            stress, sleep, focus, workload
         )
 
-        if add:
+        st.session_state.last_result = {
+            "facts": facts,
+            "rules": [r["id"] for r in matched],
+            "risk": risk
+        }
 
-            if not subject_name.strip():
+        execute("""
+            INSERT INTO sb_assessments
+            (created_at,stress,sleep,focus,workload,exam_days,risk,rules)
+            VALUES(?,?,?,?,?,?,?,?)
+        """, (
+            datetime.now().isoformat(),
+            stress,
+            sleep,
+            focus,
+            workload,
+            int(exam_days),
+            risk,
+            json.dumps([r["id"] for r in matched])
+        ))
 
-                st.error(t(
-                    "Enter a subject name.",
-                    "اكتبي اسم المادة."
-                ))
+    result = st.session_state.last_result
+
+    if result:
+
+        st.markdown("### Your Assessment Result")
+
+        c1, c2 = st.columns(2)
+
+        c1.metric("Study Strain", result["risk"])
+        c2.metric("Activated Rules", len(result["rules"]))
+
+        for rule in inference_engine(result["facts"]):
+
+            st.markdown(f"""
+            <div class="rule">
+                <b>{rule["id"]} · {rule["name"]}</b>
+                <p>{rule["recommendation"]}</p>
+                <div class="muted">
+                    Why: {rule["reason"]}
+                </div>
+                <div class="muted">
+                    Action: {rule["action"]}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.caption(
+            "Educational recommendations only; not a medical diagnosis."
+        )
+
+
+# =========================================================
+# KNOWLEDGE BASE
+# =========================================================
+
+elif page == "Knowledge Base":
+
+    st.title("📚 Knowledge Base")
+
+    st.write(
+        "These IF–THEN rules represent the system's stored expert knowledge."
+    )
+
+    for rule in KNOWLEDGE_BASE:
+
+        st.markdown(f"""
+        <div class="rule">
+            <b>{rule["id"]} · {rule["name"]}</b>
+            <p><b>IF:</b> {rule["reason"]}</p>
+            <p><b>THEN:</b> {rule["recommendation"]}</p>
+            <div class="muted">
+                Suggested action: {rule["action"]}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# =========================================================
+# MY MATERIALS
+# =========================================================
+
+elif page == "My Materials":
+
+    st.title("📖 My Materials")
+
+    st.write("Upload and organize your lecture files.")
+
+    uploaded = st.file_uploader(
+        "Upload PDF or TXT files",
+        type=["pdf", "txt"],
+        accept_multiple_files=True
+    )
+
+    subject_options = ["General"] + [
+        s["name"] for s in subjects
+    ]
+
+    subject = st.selectbox(
+        "Select Subject",
+        subject_options
+    )
+
+    if uploaded and st.button("Save Files", type="primary"):
+
+        for file in uploaded:
+
+            content = ""
+
+            if file.name.lower().endswith(".txt"):
+
+                content = file.getvalue().decode(
+                    "utf-8",
+                    errors="ignore"
+                )
 
             else:
 
                 try:
+                    import fitz
 
-                    execute("""
-                        INSERT INTO subjects
-                        (name, difficulty, priority, exam_date)
-                        VALUES (?, ?, ?, ?)
-                    """, (
-                        subject_name.strip(),
-                        difficulty,
-                        priority,
-                        exam.isoformat() if exam else ""
-                    ))
+                    pdf = fitz.open(
+                        stream=file.getvalue(),
+                        filetype="pdf"
+                    )
 
-                    st.success(t(
-                        "Subject added.",
-                        "تمت إضافة المادة."
-                    ))
+                    content = "\n".join(
+                        page.get_text() for page in pdf
+                    )
 
-                    st.rerun()
+                except ImportError:
+                    content = (
+                        "PDF uploaded. Install PyMuPDF "
+                        "to extract its text."
+                    )
 
-                except sqlite3.IntegrityError:
+                except Exception as e:
+                    content = f"Could not extract PDF text: {e}"
 
-                    st.error(t(
-                        "Subject already exists.",
-                        "المادة موجودة بالفعل."
-                    ))
+            execute("""
+                INSERT INTO sb_materials
+                (filename,subject,content,uploaded_at)
+                VALUES(?,?,?,?)
+            """, (
+                file.name,
+                subject,
+                content,
+                datetime.now().isoformat()
+            ))
 
-    subjects = get_subjects()
+        st.success("Files saved successfully!")
+        st.rerun()
 
-    if not subjects.empty:
+    materials = query(
+        "SELECT id,filename,subject,uploaded_at FROM sb_materials ORDER BY id DESC"
+    )
 
-        st.subheader(t("Your Subjects", "موادك الدراسية"))
+    if materials:
 
         st.dataframe(
-            subjects.drop(columns=["ID"]),
+            pd.DataFrame(materials),
             use_container_width=True,
             hide_index=True
         )
 
-        daily_hours = st.slider(
-            t("Daily Study Hours", "ساعات المذاكرة اليومية"),
-            1, 12,
-            int(get_profile()["daily_hours"])
+        selected = st.selectbox(
+            "Preview File",
+            ["Select"] + [
+                f'{m["id"]} - {m["filename"]}'
+                for m in materials
+            ]
         )
 
-        if st.button(
-            t("✨ Generate Weekly Plan", "✨ إنشاء الجدول الأسبوعي"),
-            type="primary",
-            use_container_width=True
-        ):
+        if selected != "Select":
 
-            difficulty_weight = {
-                "Easy": 1,
-                "Medium": 2,
-                "Hard": 3
-            }
+            material_id = int(selected.split(" - ")[0])
 
-            priority_weight = {
-                "Low": 1,
-                "Normal": 2,
-                "High": 3
-            }
-
-            items = []
-
-            for _, row in subjects.iterrows():
-
-                weight = (
-                    difficulty_weight.get(row["Difficulty"], 2)
-                    + priority_weight.get(row["Priority"], 2)
-                ) / 2
-
-                if row["Exam Date"]:
-
-                    try:
-
-                        days_left = (
-                            date.fromisoformat(row["Exam Date"])
-                            - date.today()
-                        ).days
-
-                        if 0 <= days_left <= 14:
-                            weight += (15 - days_left) / 5
-
-                    except ValueError:
-                        pass
-
-                items.append({
-                    "name": row["Subject"],
-                    "weight": weight
-                })
-
-            total_weight = sum(
-                item["weight"] for item in items
+            item = query(
+                "SELECT content FROM sb_materials WHERE id=?",
+                (material_id,)
             )
 
-            remaining = {
-                item["name"]: max(
-                    0.5,
-                    round(
-                        daily_hours * 7
-                        * item["weight"] / total_weight * 2
-                    ) / 2
-                )
-                for item in items
-            }
+            st.text_area(
+                "Extracted Text",
+                item[0]["content"],
+                height=250
+            )
+
+    else:
+        st.info("No materials uploaded yet.")
+
+
+# =========================================================
+# SMART PLANNER
+# =========================================================
+
+elif page == "Smart Planner":
+
+    st.title("🗓️ Smart Weekly Planner")
+
+    st.write(
+        "Add your subjects and generate a basic weekly study schedule."
+    )
+
+    with st.form("subject_form"):
+
+        name = st.text_input("Subject Name")
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            difficulty = st.slider(
+                "Difficulty", 1, 5, 3
+            )
+
+        with c2:
+            priority = st.slider(
+                "Priority", 1, 5, 3
+            )
+
+        exam = st.date_input(
+            "Exam Date",
+            value=date.today() + timedelta(days=14)
+        )
+
+        add_subject = st.form_submit_button(
+            "Add Subject",
+            type="primary"
+        )
+
+    if add_subject:
+
+        if name.strip():
+
+            execute("""
+                INSERT INTO sb_subjects
+                (name,difficulty,priority,exam_date)
+                VALUES(?,?,?,?)
+            """, (
+                name.strip(),
+                difficulty,
+                priority,
+                exam.isoformat()
+            ))
+
+            st.success("Subject added.")
+            st.rerun()
+
+        else:
+            st.warning("Enter a subject name.")
+
+    subjects = query(
+        "SELECT * FROM sb_subjects ORDER BY priority DESC,difficulty DESC"
+    )
+
+    if subjects:
+
+        st.markdown("### Your Subjects")
+
+        st.dataframe(
+            pd.DataFrame(subjects),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        if st.button("Generate 7-Day Plan", type="primary"):
 
             today = date.today()
 
-            days_until_saturday = (
-                5 - today.weekday()
-            ) % 7
+            with connect() as con:
+                con.execute("""
+                    DELETE FROM sb_sessions
+                    WHERE session_date >= ?
+                    AND status = 'Pending'
+                """, (today.isoformat(),))
 
-            if days_until_saturday == 0:
-                days_until_saturday = 7
+            daily_hours = float(get_settings()["daily_hours"])
 
-            week_start = today + timedelta(
-                days=days_until_saturday
-            )
+            for day_number in range(7):
 
-            generated = []
+                current_day = today + timedelta(
+                    days=day_number
+                )
 
-            for index, day_name in enumerate(DAYS):
+                available = daily_hours
+                start_hour = 9
 
-                current_date = week_start + timedelta(days=index)
+                # Maximum 3 subjects per day
+                daily_subjects = subjects[:3]
 
-                used_hours = 0
-                used_subjects = set()
-                minute_of_day = 9 * 60
+                for subject in daily_subjects:
 
-                while used_hours + 0.5 <= daily_hours:
-
-                    choices = [
-                        item for item in items
-                        if remaining[item["name"]] >= 0.5
-                        and item["name"] not in used_subjects
-                    ]
-
-                    if not choices:
+                    if available < 0.5:
                         break
 
-                    chosen = max(
-                        choices,
-                        key=lambda item: (
-                            item["weight"],
-                            remaining[item["name"]]
-                        )
-                    )
+                    duration = min(1.0, available)
 
-                    duration = min(
-                        2,
-                        daily_hours - used_hours,
-                        remaining[chosen["name"]]
-                    )
+                    start = f"{start_hour:02d}:00"
 
-                    duration = math.floor(duration * 2) / 2
-
-                    if duration < 0.5:
-                        break
-
-                    start = (
-                        datetime.combine(
-                            current_date,
-                            datetime.min.time()
-                        )
-                        + timedelta(minutes=minute_of_day)
-                    ).strftime("%H:%M")
-
-                    generated.append((
-                        day_name,
-                        current_date.isoformat(),
+                    execute("""
+                        INSERT INTO sb_sessions
+                        (session_date,subject,start_time,duration,status)
+                        VALUES(?,?,?,?,?)
+                    """, (
+                        current_day.isoformat(),
+                        subject["name"],
                         start,
-                        chosen["name"],
                         duration,
                         "Pending"
                     ))
 
-                    remaining[chosen["name"]] -= duration
-                    used_hours += duration
-                    used_subjects.add(chosen["name"])
+                    available -= duration
+                    start_hour += int(duration) + 1
 
-                    minute_of_day += int(duration * 60) + 15
-
-                    if len(used_subjects) >= 3:
-                        break
-
-            with db_connection() as conn:
-
-                conn.execute("DELETE FROM sessions")
-
-                for item in generated:
-
-                    conn.execute("""
-                        INSERT INTO sessions
-                        (day, session_date, start_time,
-                         subject, duration, status)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, item)
-
-            st.success(t(
-                "Your weekly plan is ready!",
-                "تم إنشاء جدولك الأسبوعي!"
-            ))
-
+            st.success("Your weekly plan has been generated.")
             st.rerun()
 
-    sessions = get_sessions()
+    st.markdown("### Study Sessions")
 
-    if not sessions.empty:
+    sessions = query("""
+        SELECT * FROM sb_sessions
+        ORDER BY session_date,start_time
+    """)
 
-        st.divider()
+    if sessions:
 
-        st.subheader(t(
-            "Your Weekly Schedule",
-            "جدولك الأسبوعي"
-        ))
+        for session in sessions:
 
-        st.dataframe(
-            sessions.drop(columns=["ID"]),
-            use_container_width=True,
-            hide_index=True
-        )
+            a, b, c, d = st.columns([2, 2, 1, 1])
 
-        csv_data = sessions.drop(
-            columns=["ID"]
-        ).to_csv(index=False).encode("utf-8-sig")
+            a.write(f"**{session['subject']}**")
 
-        st.download_button(
-            t("⬇️ Download CSV", "⬇️ تحميل الجدول"),
-            csv_data,
-            "weekly_study_plan.csv",
-            "text/csv"
-        )
-
-        pending = sessions[
-            sessions["Status"] == "Pending"
-        ]
-
-        if not pending.empty:
-
-            selected = st.multiselect(
-                t(
-                    "Select completed sessions",
-                    "اختاري الجلسات المكتملة"
-                ),
-                pending["ID"].tolist()
+            b.caption(
+                f"{session['session_date']} · {session['start_time']}"
             )
 
-            if st.button(
-                t("✅ Mark as Completed", "✅ تحديد كمكتملة")
+            c.write(f"{session['duration']}h")
+
+            if session["status"] == "Completed":
+
+                d.success("Completed")
+
+            elif d.button(
+                "Complete",
+                key=f"done_{session['id']}"
             ):
 
-                for session_id in selected:
-
-                    execute("""
-                        UPDATE sessions
-                        SET status='Completed'
-                        WHERE id=? AND status='Pending'
-                    """, (session_id,))
-
-                    add_xp(f"session-{session_id}", 20)
-
-                st.success(t(
-                    "Progress updated!",
-                    "تم تحديث الإنجاز!"
-                ))
+                execute("""
+                    UPDATE sb_sessions
+                    SET status='Completed'
+                    WHERE id=?
+                """, (session["id"],))
 
                 st.rerun()
 
-        if st.button(
-            t("🗑️ Clear Weekly Plan", "🗑️ مسح الجدول")
-        ):
-
-            execute("DELETE FROM sessions")
-            st.rerun()
+    else:
+        st.info("Add subjects and generate your plan.")
 
 
-# =====================================================
-# 18. AI STUDY BUDDY
-# =====================================================
+# =========================================================
+# AI STUDY BUDDY - RULE BASED CHAT
+# =========================================================
 
-elif page == "Chat":
+elif page == "AI Study Buddy":
 
-    st.title("🤖 " + t("AI Study Buddy", "مساعد الدراسة الذكي"))
+    st.title("🤖 AI Study Buddy")
 
-    st.markdown(
-        f"""
-        <div class="robot-card">
-            {ROBOT}
-            <h3>Study Buddy</h3>
-            <p>{t(
-                "Your friendly academic companion.",
-                "رفيقك الدراسي الذكي."
-            )}</p>
-        </div>
-        """,
-        unsafe_allow_html=True
+    st.write(
+        "Talk to your academic expert assistant."
     )
 
-    for role, message in st.session_state.chat_history:
+    for message in st.session_state.chat:
 
         with st.chat_message(
-            role,
-            avatar="🤖" if role == "assistant" else "🧑‍🎓"
+            message["role"],
+            avatar="🤖" if message["role"] == "assistant" else "🧑‍🎓"
         ):
 
-            st.markdown(message)
+            st.markdown(message["content"])
 
-    question = st.chat_input(
-        t("Ask your study buddy...", "اسألي مساعد الدراسة...")
+    prompt = st.chat_input(
+        "Ask me about your study plan, focus or stress..."
     )
 
-    if question:
+    if prompt:
 
-        st.session_state.chat_history.append(
-            ("user", question)
-        )
+        st.session_state.chat.append({
+            "role": "user",
+            "content": prompt
+        })
 
-        materials = get_materials()
+        lower = prompt.lower()
 
-        context = "\n\n".join(
-            f"FILE: {item[1]}\n{item[3]}"
-            for item in materials
-        )
+        if any(word in lower for word in [
+            "stress", "توتر", "ضغط", "قلق"
+        ]):
 
-        answer = ""
+            result = st.session_state.last_result
 
-        try:
-            api_key = st.secrets.get(
-                "OPENAI_API_KEY",
-                os.getenv("OPENAI_API_KEY", "")
-            )
-        except Exception:
-            api_key = os.getenv("OPENAI_API_KEY", "")
+            if result:
 
-        if api_key and OpenAI:
+                rules = inference_engine(result["facts"])
 
-            try:
-
-                client = OpenAI(api_key=api_key)
-
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    temperature=0.2,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a careful bilingual study assistant. "
-                                "Use uploaded materials as the main source. "
-                                "If information is missing, say so clearly. "
-                                "Do not invent facts."
-                            )
-                        },
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Uploaded materials:\n{context[:25000]}\n\n"
-                                f"Question: {question}"
-                            )
-                        }
-                    ]
-                )
-
-                answer = response.choices[0].message.content
-
-            except Exception as error:
-
-                answer = f"AI connection error: {error}"
-
-        else:
-
-            keywords = [
-                word.lower()
-                for word in re.findall(r"\w+", question)
-                if len(word) > 3
-            ]
-
-            matches = []
-
-            for item in materials:
-
-                filename = item[1]
-                content = item[3] or ""
-
-                lines = [
-                    line.strip()
-                    for line in content.splitlines()
-                    if line.strip()
-                    and any(
-                        word in line.lower()
-                        for word in keywords
-                    )
-                ]
-
-                if lines:
-
-                    matches.append(
-                        f"**{filename}**\n"
-                        + "\n".join(lines[:6])
-                    )
-
-            if matches:
-
-                answer = "\n\n".join(matches[:4])
-
-                answer += (
-                    "\n\nKeyword search only. "
-                    "Add an OpenAI API key for AI-generated answers."
-                )
+                answer = "\n\n".join([
+                    f"**{r['name']}**\n"
+                    f"{r['recommendation']}\n"
+                    f"Reason: {r['reason']}"
+                    for r in rules
+                ])
 
             else:
 
-                answer = t(
-                    "I couldn't find the answer in your uploaded files. "
-                    "Upload the relevant lecture or configure an AI API key.",
-                    "لم أجد الإجابة في ملفاتك. "
-                    "ارفعي المحاضرة المناسبة أو أضيفي مفتاح API لتفعيل الذكاء الاصطناعي."
+                answer = (
+                    "ابدئي بصفحة Expert Assessment "
+                    "وسجلي مستوى التوتر والنوم والتركيز."
                 )
 
-        st.session_state.chat_history.append(
-            ("assistant", answer)
-        )
+        elif any(word in lower for word in [
+            "plan", "schedule", "جدول", "خطة", "مذاكرة"
+        ]):
 
-        st.rerun()
+            answer = (
+                f"عندك {len(subjects)} مادة و"
+                f"{pending} جلسة معلقة. "
+                "افتحي Smart Planner لتنظيم جدولك."
+            )
 
-    if st.button(t("Clear Chat", "مسح المحادثة")):
+        elif any(word in lower for word in [
+            "rule", "expert", "قاعدة", "استدلال"
+        ]):
 
-        st.session_state.chat_history = []
-        st.rerun()
+            answer = (
+                "النظام يستخدم Knowledge Base تحتوي على "
+                "قواعد IF–THEN. يقوم Inference Engine "
+                "بمطابقة بيانات الطالب مع القواعد، "
+                "ثم يعرض التوصية وسببها."
+            )
 
+        elif any(word in lower for word in [
+            "sleep", "نوم", "نمت"
+        ]):
 
-# =====================================================
-# 19. MY PROGRESS
-# =====================================================
-
-elif page == "Progress":
-
-    st.title("📈 " + t("My Progress", "إنجازاتي"))
-
-    xp = get_xp()
-    level, next_level = get_level(xp)
-
-    sessions = get_sessions()
-
-    completed = 0
-    completed_hours = 0
-
-    if not sessions.empty:
-
-        done = sessions[
-            sessions["Status"] == "Completed"
-        ]
-
-        completed = len(done)
-        completed_hours = done["Hours"].sum()
-
-    c1, c2, c3 = st.columns(3)
-
-    c1.metric("⭐ XP", xp)
-    c2.metric("🏅 Level", level[1])
-    c3.metric("🤖 Buddy", level[2])
-
-    st.metric(
-        t("Completed Sessions", "الجلسات المكتملة"),
-        completed
-    )
-
-    st.metric(
-        t("Completed Study Hours", "ساعات المذاكرة المكتملة"),
-        f"{completed_hours:.1f}"
-    )
-
-    if next_level:
-
-        progress = (
-            (xp - level[0])
-            / (next_level[0] - level[0])
-        )
-
-        st.progress(min(1.0, progress))
-
-        st.caption(
-            f"{next_level[0] - xp} XP to {next_level[1]}"
-        )
-
-    if not sessions.empty:
-
-        st.subheader(t("Session Status", "حالة الجلسات"))
-
-        chart = sessions.groupby("Status")["Hours"].sum()
-
-        st.bar_chart(chart)
-
-
-# =====================================================
-# 20. STRESS MANAGEMENT
-# =====================================================
-
-elif page == "Stress":
-
-    st.title("🧠 " + t("Stress Management", "إدارة التوتر"))
-
-    with st.form("stress_form"):
-
-        stress = st.slider(
-            t("Stress Level", "مستوى التوتر"),
-            1, 10, 5
-        )
-
-        sleep = st.slider(
-            t("Sleep Hours", "ساعات النوم"),
-            0.0, 12.0, 7.0, 0.5
-        )
-
-        focus = st.slider(
-            t("Focus Level", "مستوى التركيز"),
-            1, 10, 6
-        )
-
-        workload = st.slider(
-            t("Workload Level", "ضغط الدراسة"),
-            1, 10, 5
-        )
-
-        submitted = st.form_submit_button(
-            t("Analyze My Wellbeing", "تحليل حالتي"),
-            type="primary"
-        )
-
-    if submitted:
-
-        score = round(
-            stress * 0.35
-            + (10 - focus) * 0.25
-            + workload * 0.25
-            + max(0, 8 - sleep) * 0.15,
-            1
-        )
-
-        execute("""
-            INSERT INTO stress_history
-            (created, score, stress, sleep, focus, workload)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            datetime.now().isoformat(timespec="minutes"),
-            score,
-            stress,
-            sleep,
-            focus,
-            workload
-        ))
-
-        st.metric(
-            t("Stress Indicator", "مؤشر التوتر"),
-            f"{score}/10"
-        )
-
-        if score >= 7:
-
-            st.warning(t(
-                "Your indicator is high. Reduce workload and take breaks.",
-                "المؤشر مرتفع. قللي ضغط الدراسة وخدي فواصل."
-            ))
-
-        elif score >= 4:
-
-            st.info(t(
-                "Your indicator is moderate. Balance study and rest.",
-                "المؤشر متوسط. وازني بين المذاكرة والراحة."
-            ))
+            answer = (
+                "النوم جزء مهم من تنظيم المذاكرة. "
+                "سجلي عدد ساعات نومك في Expert Assessment "
+                "للحصول على توصية مبنية على قواعد النظام."
+            )
 
         else:
 
-            st.success(t(
-                "Your indicator is relatively low. Keep your routine balanced.",
-                "المؤشر منخفض نسبياً. حافظي على توازنك."
-            ))
+            answer = (
+                "أقدر أساعدك في تنظيم المذاكرة والتوتر "
+                "والتركيز وفهم النظام الخبير. "
+                "جربي تشغيل Expert Assessment للحصول "
+                "على توصية شخصية."
+            )
 
-        if sleep < 7:
-            st.write("🌙 " + t(
-                "Try to improve your sleep routine.",
-                "حاولي تحسين مواعيد نومك."
-            ))
-
-        if focus < 5:
-            st.write("🎯 " + t(
-                "Try shorter focused study sessions.",
-                "جربي جلسات مذاكرة أقصر وأكثر تركيزاً."
-            ))
-
-        if workload > 7:
-            st.write("📝 " + t(
-                "Break large tasks into smaller steps.",
-                "قسّمي المهام الكبيرة إلى خطوات أصغر."
-            ))
-
-        st.caption(t(
-            "This is a self-check indicator, not a medical diagnosis.",
-            "هذا تقييم ذاتي وليس تشخيصاً طبياً."
-        ))
-
-
-# =====================================================
-# 21. HELP & GUIDE
-# =====================================================
-
-elif page == "Help":
-
-    st.title("💡 " + t("Help & Guide", "المساعدة والإرشادات"))
-
-    st.markdown("""
-    ### How to use the application
-
-    1. **Student Profile:** Add your academic information.
-    2. **Upload & Analyze:** Upload lecture and timetable PDFs.
-    3. **My Materials:** Review and search extracted text.
-    4. **Academic Timetable:** Review your uploaded timetable.
-    5. **Weekly Planner:** Add subjects and generate a study plan.
-    6. **AI Study Buddy:** Ask questions about your materials.
-    7. **My Progress:** Complete sessions to earn XP.
-    8. **Stress Management:** Review your stress and focus indicators.
-    """)
-
-    st.warning(
-        "Streamlit Cloud local SQLite storage may not be durable "
-        "across redeployments. Use an external database for reliable "
-        "long-term cloud storage."
-    )
-
-
-# =====================================================
-# 22. SETTINGS
-# =====================================================
-
-elif page == "Settings":
-
-    st.title("⚙️ " + t("Settings", "الإعدادات"))
-
-    language = st.selectbox(
-        t("Language", "اللغة"),
-        ["English", "العربية"],
-        index=["English", "العربية"].index(LANGUAGE)
-    )
-
-    theme = st.selectbox(
-        t("Appearance", "المظهر"),
-        ["Dark", "Light"],
-        index=["Dark", "Light"].index(THEME)
-    )
-
-    if st.button(
-        t("Save Settings", "حفظ الإعدادات"),
-        type="primary"
-    ):
-
-        execute("""
-            UPDATE settings
-            SET language=?, theme=?
-            WHERE id=1
-        """, (language, theme))
-
-        st.success(t(
-            "Settings saved. Refreshing...",
-            "تم حفظ الإعدادات. جاري التحديث..."
-        ))
+        st.session_state.chat.append({
+            "role": "assistant",
+            "content": answer
+        })
 
         st.rerun()
 
-    st.divider()
-
-    st.subheader("AI Study Buddy")
-
-    st.write(t(
-        "To enable AI answers, add OPENAI_API_KEY "
-        "under Streamlit Cloud → App Settings → Secrets.",
-        "لتفعيل إجابات الذكاء الاصطناعي، أضيفي OPENAI_API_KEY "
-        "في Streamlit Cloud ثم App Settings ثم Secrets."
-    ))
+    st.caption(
+        "Current chat uses rule-based responses. "
+        "Generative AI API integration is a separate future feature."
+    )
 
 
-# =====================================================
-# 23. FOOTER
-# =====================================================
+# =========================================================
+# MY PROGRESS
+# =========================================================
 
-st.divider()
+elif page == "My Progress":
+
+    st.title("📊 My Progress")
+
+    a, b, c = st.columns(3)
+
+    a.metric("Completed Sessions", completed)
+
+    b.metric("Pending Sessions", pending)
+
+    c.metric("Study Hours", f"{study_hours:g}h")
+
+    st.markdown("### Overall Progress")
+
+    st.progress(progress)
+
+    st.write(f"{progress * 100:.1f}% completed")
+
+    if sessions:
+
+        df = pd.DataFrame(sessions)
+
+        df["session_date"] = pd.to_datetime(
+            df["session_date"]
+        )
+
+        summary = df.groupby("session_date").agg(
+            Total=("id", "count"),
+            Completed=(
+                "status",
+                lambda x: (x == "Completed").sum()
+            )
+        )
+
+        st.markdown("### Daily Sessions")
+
+        st.line_chart(summary)
+
+    else:
+        st.info("Your progress will appear after creating a study plan.")
+
+
+# =========================================================
+# STRESS MANAGEMENT
+# =========================================================
+
+elif page == "Stress Management":
+
+    st.title("💜 Stress Management")
+
+    st.write(
+        "Personalized suggestions based on your latest assessment."
+    )
+
+    latest = query("""
+        SELECT * FROM sb_assessments
+        ORDER BY id DESC LIMIT 1
+    """)
+
+    if latest:
+
+        item = latest[0]
+
+        st.metric(
+            "Latest Study Strain",
+            item["risk"]
+        )
+
+        rules = json.loads(item["rules"])
+
+        for rule_id in rules:
+
+            matched = [
+                r for r in KNOWLEDGE_BASE
+                if r["id"] == rule_id
+            ]
+
+            for rule in matched:
+
+                st.markdown(f"""
+                <div class="rule">
+                    <b>{rule["name"]}</b>
+                    <p>{rule["recommendation"]}</p>
+                    <div class="muted">
+                        {rule["reason"]}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+    else:
+
+        st.info(
+            "Complete Expert Assessment to receive suggestions."
+        )
+
+    st.warning(
+        "These educational suggestions are not medical advice."
+    )
+
+
+# =========================================================
+# SETTINGS - CUSTOM THEMES
+# =========================================================
+
+elif page == "Settings":
+
+    st.title("⚙️ Settings")
+
+    st.markdown("### 🎨 Appearance & Themes")
+
+    theme_names = list(THEMES.keys())
+
+    current_theme = next(
+        (
+            name for name, color in THEMES.items()
+            if color == settings["accent"]
+        ),
+        "Purple"
+    )
+
+    with st.form("appearance_form"):
+
+        selected_theme = st.selectbox(
+            "Choose your favorite color",
+            theme_names,
+            index=theme_names.index(current_theme)
+        )
+
+        selected_mode = st.radio(
+            "Display Mode",
+            ["Dark", "Light"],
+            index=0 if settings["mode"] == "Dark" else 1,
+            horizontal=True
+        )
+
+        st.markdown(
+            f"""
+            <div class="card">
+                <b>Theme Preview</b>
+                <div style="
+                    background:{THEMES[selected_theme]};
+                    padding:20px;
+                    border-radius:14px;
+                    color:white;
+                    margin-top:12px;
+                ">
+                    <h3 style="color:white">Study Buddy 🤖</h3>
+                    Your personal study assistant
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        save_theme = st.form_submit_button(
+            "Save Appearance",
+            type="primary"
+        )
+
+    if save_theme:
+
+        save_settings(
+            settings["name"],
+            THEMES[selected_theme],
+            selected_mode,
+            settings["language"],
+            settings["daily_hours"]
+        )
+
+        st.success(
+            "Theme saved! The new appearance will be applied after rerun."
+        )
+
+        st.rerun()
+
+    st.markdown("---")
+
+    st.markdown("### 🌐 Language")
+
+    st.write(
+        "Current language: " + settings["language"]
+    )
+
+    st.markdown("### ℹ️ About")
+
+    st.markdown("""
+    <div class="card">
+        <h3>Study Buddy</h3>
+        <p class="muted">
+        Academic & Stress Management Expert System
+        </p>
+        <p>
+        Built using Python, Streamlit, SQLite,
+        Knowledge Base and Rule-Based Inference.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# =========================================================
+# FOOTER
+# =========================================================
+
+st.markdown("---")
 
 st.markdown(
     """
-    <div class="footer">
-        SMART STUDENT ASSISTANT
-        <br>
-        ACADEMIC & STRESS MANAGEMENT
+    <div style="text-align:center;color:gray;font-size:12px">
+        STUDY BUDDY · ACADEMIC & STRESS MANAGEMENT EXPERT SYSTEM
     </div>
     """,
     unsafe_allow_html=True
