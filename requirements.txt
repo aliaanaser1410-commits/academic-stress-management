@@ -1,16 +1,8 @@
 
-streamlit>=1.30.0
-
-pandas>=2.0.0
-
-numpy>=1.24.0
-
-matplotlib>=3.7.0
-
-PyMuPDF>=1.23.0
-
+streamlit>=1.35
+pandas>=2.0
+PyMuPDF>=1.23
+Pillow>=10.0
 pytesseract>=0.3.10
+openai>=1.30
 
-Pillow>=9.0.0
-
-google-generativeai>=0.3.0
