@@ -1,1357 +1,901 @@
-
-import streamlit as st
-import pandas as pd
-import sqlite3
-import json
-import os
-import fitz
+import math
 from pathlib import Path
-from datetime import date, datetime, timedelta
 
-# =====================================================
-# CONFIGURATION
-# =====================================================
+import matplotlib.pyplot as plt
+import pandas as pd
+import streamlit as st
 
+# --------------------------------------------------
+# Theme config (written once, next to this file).
+# It makes sliders / focus rings use the accent colour.
+# Takes effect from the next launch of the app.
+# --------------------------------------------------
+try:
+    _cfg_dir = Path(__file__).resolve().parent / ".streamlit"
+    _cfg = _cfg_dir / "config.toml"
+    if not _cfg.exists():
+        _cfg_dir.mkdir(exist_ok=True)
+        _cfg.write_text(
+            '[theme]\n'
+            'base = "dark"\n'
+            'primaryColor = "#6366f1"\n'
+            'backgroundColor = "#0b0f19"\n'
+            'secondaryBackgroundColor = "#121826"\n'
+            'textColor = "#e5e7eb"\n'
+            'font = "sans serif"\n',
+            encoding="utf-8",
+        )
+except Exception:
+    pass
+
+# ==================================================
+# 1. PAGE CONFIG
+# ==================================================
 st.set_page_config(
-    page_title="Smart Student Assistant",
-    page_icon="🎓",
+    page_title="Academic & Stress Management",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed",
 )
 
-DB_PATH = Path(__file__).parent / "student_assistant.db"
-
-# =====================================================
-# DATABASE
-# =====================================================
-
-def db_connection():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def init_db():
-    with db_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS profile (
-                id INTEGER PRIMARY KEY,
-                data TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_date TEXT,
-                subject TEXT,
-                duration REAL,
-                status TEXT DEFAULT 'Pending'
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS chat (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                role TEXT,
-                message TEXT,
-                created_at TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS materials (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT,
-                subject TEXT,
-                content TEXT
-            )
-        """)
-
-
-def save_profile(data):
-    with db_connection() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO profile (id, data) VALUES (1, ?)",
-            (json.dumps(data, ensure_ascii=False),)
-        )
-
-
-def load_profile():
-    with db_connection() as conn:
-        row = conn.execute(
-            "SELECT data FROM profile WHERE id=1"
-        ).fetchone()
-    return json.loads(row[0]) if row else {}
-
-
-def save_plan(plan):
-    with db_connection() as conn:
-        conn.execute("DELETE FROM sessions")
-        for item in plan:
-            conn.execute("""
-                INSERT INTO sessions
-                (session_date, subject, duration, status)
-                VALUES (?, ?, ?, ?)
-            """, (
-                item["date"],
-                item["subject"],
-                item["duration"],
-                item.get("status", "Pending")
-            ))
-
-
-def load_plan():
-    with db_connection() as conn:
-        rows = conn.execute("""
-            SELECT session_date, subject, duration, status
-            FROM sessions ORDER BY session_date, id
-        """).fetchall()
-
-    return [
-        {
-            "date": r[0],
-            "subject": r[1],
-            "duration": r[2],
-            "status": r[3]
-        } for r in rows
-    ]
-
-
-def save_chat(role, message):
-    with db_connection() as conn:
-        conn.execute("""
-            INSERT INTO chat (role, message, created_at)
-            VALUES (?, ?, ?)
-        """, (role, message, datetime.now().isoformat()))
-
-
-def load_chat():
-    with db_connection() as conn:
-        rows = conn.execute("""
-            SELECT role, message FROM chat
-            ORDER BY id DESC LIMIT 30
-        """).fetchall()
-    return list(reversed(rows))
-
-
-def clear_chat():
-    with db_connection() as conn:
-        conn.execute("DELETE FROM chat")
-
-
-def save_material(filename, subject, content):
-    with db_connection() as conn:
-        conn.execute("""
-            INSERT INTO materials (filename, subject, content)
-            VALUES (?, ?, ?)
-        """, (filename, subject, content))
-
-
-def load_materials():
-    with db_connection() as conn:
-        return conn.execute("""
-            SELECT id, filename, subject, content
-            FROM materials ORDER BY id DESC
-        """).fetchall()
-
-
-def delete_material(material_id):
-    with db_connection() as conn:
-        conn.execute(
-            "DELETE FROM materials WHERE id=?",
-            (material_id,)
-        )
-
-
-init_db()
-
-# =====================================================
-# LANGUAGE
-# =====================================================
-
-if "language" not in st.session_state:
-    st.session_state.language = "English"
-
-LANG = st.session_state.language
-AR = LANG == "Arabic"
-
-TEXT = {
-    "home": ("الرئيسية", "Home"),
-    "interview": ("تقييم الطالب", "Student Interview"),
-    "profile": ("ملفي الشخصي", "My Profile"),
-    "materials": ("المحاضرات والملفات", "My Materials"),
-    "planner": ("الجدول الأسبوعي", "Weekly Planner"),
-    "buddy": ("المساعد الذكي", "Study Buddy"),
-    "progress": ("إنجازاتي", "My Progress"),
-    "stress": ("إدارة التوتر", "Stress Management"),
-    "settings": ("الإعدادات", "Settings"),
-    "welcome": ("مرحبًا بك في مساعدك الدراسي الذكي", "Welcome to your Smart Student Assistant"),
-    "start": ("ابدأ التقييم", "Start Assessment"),
-    "next": ("التالي", "Next"),
-    "back": ("السابق", "Back"),
-    "generate": ("إنشاء الجدول", "Generate Plan"),
-    "save": ("حفظ", "Save"),
-    "no_profile": ("ابدأ المقابلة أولًا لتجهيز خطتك.", "Complete the interview first to prepare your plan."),
-}
-
-
-def tr(key):
-    return TEXT.get(key, (key, key))[0 if AR else 1]
-
-
-# =====================================================
-# THEME
-# =====================================================
-
-if "theme" not in st.session_state:
-    st.session_state.theme = "Purple"
-
-if "mode" not in st.session_state:
-    st.session_state.mode = "Dark"
-
-THEMES = {
-    "Purple": "#8B5CF6",
-    "Blue": "#3B82F6",
-    "Pink": "#EC4899",
-    "Green": "#10B981",
-    "Orange": "#F97316",
-    "Teal": "#14B8A6",
-    "Red": "#EF4444",
-    "Indigo": "#6366F1"
-}
-
-accent = THEMES[st.session_state.theme]
-
-if st.session_state.mode == "Dark":
-    bg = "#10121C"
-    panel = "#1B1E2B"
-    foreground = "#F4F4F8"
-else:
-    bg = "#F5F6FA"
-    panel = "#FFFFFF"
-    foreground = "#202235"
-
-st.markdown(f"""
-<style>
-.stApp {{
-    background-color: {bg};
-    color: {foreground};
-}}
-[data-testid="stSidebar"] {{
-    background-color: {panel};
-}}
-h1, h2, h3, p, label {{
-    color: {foreground};
-}}
-div.stButton > button {{
-    background-color: {accent};
-    color: white;
-    border: none;
-    border-radius: 10px;
-    padding: 9px 20px;
-}}
-div.stButton > button:hover {{
-    border: 1px solid {accent};
-    color: {accent};
-}}
-[data-testid="stMetric"] {{
-    background-color: {panel};
-    padding: 16px;
-    border-radius: 12px;
-}}
-.card {{
-    background: {panel};
-    border-radius: 14px;
-    padding: 18px;
-    margin-bottom: 12px;
-}}
-</style>
-""", unsafe_allow_html=True)
-
-# =====================================================
-# SESSION STATE
-# =====================================================
-
+# ==================================================
+# 2. SESSION STATE
+# ==================================================
 defaults = {
-    "page": "Home",
-    "interview_step": 0,
-    "answers": {},
-    "profile": load_profile(),
-    "plan": load_plan(),
-    "chat_history": load_chat(),
-    "pending_plan": [],
-    "show_recommendations": False,
-    "xp": 0,
-    "completed_ids": []
+    "step": 0,
+    "language": "English",
+    "theme_mode": "Dark",
+    "student_name": "",
+    "study_level": "University student",
+    "daily_hours": 4,
+    "exam_days": 14,
+    "study_style": "Short focused sessions",
+    "stress_score": 5,
+    "sleep_score": 6,
+    "focus_score": 6,
+    "workload": "Moderate",
+    "subject_count": 3,
 }
 
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-profile = st.session_state.profile
+# Streamlit drops the state of widgets that are not rendered in the current
+# run. Re-assigning keeps every answer alive while moving between steps.
+MAX_SUBJECTS = 10
 
-# =====================================================
-# EXPERT SYSTEM – IF / THEN RULES
-# =====================================================
+for key in defaults:
+    st.session_state[key] = st.session_state[key]
 
-def expert_evaluation(p):
-    rules = []
+for i in range(MAX_SUBJECTS):
+    for prefix in ("subject_name_", "difficulty_", "priority_"):
+        k = f"{prefix}{i}"
+        if k in st.session_state:
+            st.session_state[k] = st.session_state[k]
 
-    stress = int(p.get("stress", 5))
-    sleep = float(p.get("sleep", 7))
-    focus = int(p.get("focus", 5))
-    workload = int(p.get("workload", 5))
-    days = int(p.get("days_left", 30))
+STEPS = ["Profile", "Assessment", "Planning", "Your plan"]
+LAST_STEP = len(STEPS) - 1
 
-    if stress >= 8:
-        rules.append({
-            "id": "R01",
-            "level": "High",
-            "title": "High Stress",
-            "reason": "Stress level is 8 or higher.",
-            "action": "Reduce today's workload and include relaxation breaks."
-        })
+WORKLOAD_SCORES = {
+    "Not manageable": 10,
+    "Difficult": 8,
+    "Moderate": 5,
+    "Manageable": 3,
+    "Very manageable": 1,
+}
 
-    elif stress >= 5:
-        rules.append({
-            "id": "R02",
-            "level": "Medium",
-            "title": "Moderate Stress",
-            "reason": "Stress level is between 5 and 7.",
-            "action": "Use shorter focused sessions and regular breaks."
-        })
-
-    if sleep < 5:
-        rules.append({
-            "id": "R03",
-            "level": "High",
-            "title": "Insufficient Sleep",
-            "reason": "Sleep duration is below 5 hours.",
-            "action": "Prioritize sleep and avoid late-night study."
-        })
-
-    elif sleep < 7:
-        rules.append({
-            "id": "R04",
-            "level": "Medium",
-            "title": "Sleep Needs Improvement",
-            "reason": "Sleep duration is below 7 hours.",
-            "action": "Try to maintain a consistent sleep routine."
-        })
-
-    if focus <= 3:
-        rules.append({
-            "id": "R05",
-            "level": "High",
-            "title": "Low Concentration",
-            "reason": "Focus score is 3 or lower.",
-            "action": "Start with 30-minute sessions and remove distractions."
-        })
-
-    if workload >= 8:
-        rules.append({
-            "id": "R06",
-            "level": "High",
-            "title": "Heavy Workload",
-            "reason": "Workload score is 8 or higher.",
-            "action": "Break large tasks into smaller steps."
-        })
-
-    if days <= 3:
-        rules.append({
-            "id": "R07",
-            "level": "High",
-            "title": "Exam Approaching",
-            "reason": "The nearest exam is within 3 days.",
-            "action": "Prioritize revision and important topics."
-        })
-
-    if not rules:
-        rules.append({
-            "id": "R00",
-            "level": "Positive",
-            "title": "Balanced Starting Point",
-            "reason": "No high-priority risk rules were activated.",
-            "action": "Maintain a balanced study routine."
-        })
-
-    return rules
+ACCENT = "#6366f1"
 
 
-# =====================================================
-# STUDY PLANNER
-# =====================================================
-
-def make_weekly_plan(p):
-    subjects = p.get("subjects", [])
-    if not subjects:
-        return []
-
-    hours = float(p.get("study_hours", 3))
-    if any(r["level"] == "High" for r in expert_evaluation(p)):
-        hours = min(hours, 4)
-
-    hours = max(0.5, min(hours, 12))
-
-    subjects = [dict(s) for s in subjects]
-    for s in subjects:
-        s["scheduled"] = 0
-
-    plan = []
-    last_day = {}
-
-    lengths = [2, 1.5, 1, 0.5]
-
-    for day_index in range(7):
-        current = date.today() + timedelta(days=day_index)
-        remaining = hours
-        used = set()
-        daily_count = 0
-
-        while remaining >= 0.5 and daily_count < 3:
-            candidates = [s for s in subjects if s["name"] not in used]
-            if not candidates:
-                break
-
-            def score(s):
-                difficulty = int(s.get("difficulty", 3))
-                priority = int(s.get("priority", 3))
-                exam_days = int(s.get("exam_days", 30))
-                urgency = max(0, 30 - exam_days)
-                recent = day_index - last_day.get(s["name"], -10)
-
-                return (
-                    difficulty * 2
-                    + priority * 2
-                    + urgency / 10
-                    + min(recent, 5) * 0.8
-                    - s["scheduled"] * 0.15
-                )
-
-            chosen = max(candidates, key=score)
-            duration = next(
-                (x for x in lengths if x <= remaining + 0.0001),
-                0
-            )
-
-            if not duration:
-                break
-
-            plan.append({
-                "date": current.isoformat(),
-                "day": current.strftime("%A"),
-                "subject": chosen["name"],
-                "duration": duration,
-                "status": "Pending"
-            })
-
-            chosen["scheduled"] += duration
-            used.add(chosen["name"])
-            last_day[chosen["name"]] = day_index
-            remaining -= duration
-            daily_count += 1
-
-    return plan
+def go_next():
+    st.session_state.step = min(st.session_state.step + 1, LAST_STEP)
 
 
-# =====================================================
-# PDF MATERIAL EXTRACTION
-# =====================================================
-
-def extract_pdf(uploaded_file):
-    try:
-        document = fitz.open(
-            stream=uploaded_file.getvalue(),
-            filetype="pdf"
-        )
-        pages = []
-
-        for page in document:
-            pages.append(page.get_text())
-
-        return "\n".join(pages).strip()
-
-    except Exception as error:
-        st.error(f"PDF extraction error: {error}")
-        return ""
+def go_back():
+    st.session_state.step = max(st.session_state.step - 1, 0)
 
 
-# =====================================================
-# AI STUDY BUDDY
-# =====================================================
-
-def get_ai_response(question):
-    try:
-        from openai import OpenAI
-
-        api_key = st.secrets.get("OPENAI_API_KEY", "")
-
-        if not api_key:
-            return (
-                "AI API key is missing. Add OPENAI_API_KEY "
-                "in Streamlit Cloud Secrets."
-            )
-
-        client = OpenAI(api_key=api_key)
-
-        language = "Arabic" if AR else "English"
-
-        student_context = json.dumps(
-            profile,
-            ensure_ascii=False
-        )
-
-        materials = load_materials()
-        material_context = "\n\n".join(
-            f"File: {m[1]}\nSubject: {m[2]}\nContent:\n{m[3][:5000]}"
-            for m in materials
-        )
-
-        messages = [
-            {
-                "role": "system",
-                "content": f"""
-You are Study Buddy, a friendly academic assistant.
-
-Respond in {language}.
-Help with studying, time management, revision and student wellbeing.
-Use the student's profile when relevant.
-Use uploaded materials when answering questions about their lectures.
-Never invent facts from uploaded materials.
-If the uploaded files do not contain the answer, say so clearly.
-Give clear, practical and encouraging answers.
-
-Student profile:
-{student_context}
-
-Uploaded study materials:
-{material_context}
-"""
-            }
-        ]
-
-        for role, content in st.session_state.chat_history[-12:]:
-            if role in ("user", "assistant"):
-                messages.append({
-                    "role": role,
-                    "content": content
-                })
-
-        messages.append({
-            "role": "user",
-            "content": question
-        })
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.5
-        )
-
-        return response.choices[0].message.content
-
-    except Exception as error:
-        return f"AI connection error: {error}"
-
-
-# =====================================================
-# SIDEBAR
-# =====================================================
-
-with st.sidebar:
-    st.markdown("# 🎓 Smart Student")
-    st.caption("Your Academic Companion")
-
-    st.divider()
-
-    st.markdown("### 🌐 Language")
-
-    language_choice = st.selectbox(
-        "Language",
-        ["English", "Arabic"],
-        index=0 if LANG == "English" else 1
+def compute_stress():
+    raw = (
+        0.50 * st.session_state.stress_score
+        + 0.25 * (10 - st.session_state.sleep_score)
+        + 0.15 * (10 - st.session_state.focus_score)
+        + 0.10 * WORKLOAD_SCORES[st.session_state.workload]
     )
+    return max(0, min(10, math.floor(raw + 0.5)))
 
-    if language_choice != LANG:
-        st.session_state.language = language_choice
+
+def stress_level(score):
+    if score <= 3:
+        return "Low", "#34d399"
+    if score <= 6:
+        return "Moderate", "#fbbf24"
+    return "High", "#f87171"
+
+
+TRANSLATIONS = {
+    "Smart Student Assistant": "مساعد الطالب الذكي",
+    "Academic & Stress Management": "إدارة الدراسة والتوتر",
+    "Academic &amp; Stress Management": "إدارة الدراسة والتوتر",
+    "Plan your study time, organize your subjects, and get practical guidance for managing academic pressure.": "نظّم وقت مذاكرتك وموادك واحصل على إرشادات عملية للتعامل مع الضغط الدراسي.",
+    "Profile": "البيانات الشخصية",
+    "Assessment": "تقييم التوتر",
+    "Planning": "تنظيم المذاكرة",
+    "Your plan": "خطتك الدراسية",
+    "Step 1 · Profile": "الخطوة 1 · البيانات الشخصية",
+    "Let’s get to know you": "خلّينا نتعرّف عليك",
+    "Enter your information to personalize your study plan.": "أدخل بياناتك لتخصيص خطة المذاكرة المناسبة لك.",
+    "Student name": "اسم الطالب",
+    "Enter your name": "اكتب اسمك",
+    "Academic level": "المرحلة الدراسية",
+    "University student": "طالب جامعي",
+    "High school student": "طالب ثانوي",
+    "Preparatory student": "طالب إعدادي",
+    "Other": "أخرى",
+    "Available study hours per day": "عدد ساعات المذاكرة المتاحة يوميًا",
+    "Preferred study style": "أسلوب المذاكرة المفضل",
+    "Short focused sessions": "جلسات قصيرة بتركيز",
+    "Long focused sessions": "جلسات طويلة بتركيز",
+    "Mix of both": "مزيج من الاثنين",
+    "Days remaining until exam or deadline": "الأيام المتبقية للامتحان أو الموعد النهائي",
+    "Tip.": "نصيحة.",
+    "A balanced and realistic routine is easier to maintain than an overloaded schedule.": "الجدول المتوازن والواقعي أسهل في الالتزام من الجدول المزدحم.",
+    "Continue": "التالي",
+    "Please enter your name before continuing.": "من فضلك اكتبي اسمك قبل المتابعة.",
+    "Step 2 · Well-being": "الخطوة 2 · حالتك العامة",
+    "How are you feeling?": "كيف تشعر الآن؟",
+    "Rate your current experience. This is a self-reflection tool, not a medical diagnosis.": "قيّم حالتك الحالية. هذا للتقييم الذاتي وليس تشخيصًا طبيًا.",
+    "How stressed do you feel about studying?": "ما مستوى التوتر الذي تشعر به بسبب المذاكرة؟",
+    "How well can you concentrate?": "ما مدى قدرتك على التركيز؟",
+    "How well are you sleeping?": "ما مدى جودة نومك؟",
+    "How manageable is your workload?": "ما مدى قدرتك على التعامل مع عبء الدراسة؟",
+    "Not manageable": "صعب جدًا",
+    "Difficult": "صعب",
+    "Moderate": "متوسط",
+    "Manageable": "يمكن التعامل معه",
+    "Very manageable": "يمكن التعامل معه بسهولة",
+    "Your stress estimate": "تقدير مستوى التوتر",
+    "Calculated from your answers using simple weighted rules. It is an organizational aid, not a validated clinical scale.": "تم حسابه من إجاباتك باستخدام قواعد بسيطة. وهو أداة تنظيمية وليس مقياسًا طبيًا معتمدًا.",
+    "Step 3 · Study planning": "الخطوة 3 · تنظيم المذاكرة",
+    "Organize your subjects": "نظّم موادك الدراسية",
+    "Add each subject and set its difficulty and priority.": "أضف كل مادة وحدد مستوى صعوبتها وأهميتها.",
+    "How many subjects do you have?": "كم مادة لديك؟",
+    "SUBJECT": "المادة",
+    "Subject name": "اسم المادة",
+    "Difficulty": "الصعوبة",
+    "Easy": "سهلة",
+    "Medium": "متوسطة",
+    "Hard": "صعبة",
+    "Priority": "الأولوية",
+    "Normal": "عادية",
+    "Important": "مهمة",
+    "Very important": "مهمة جدًا",
+    "How it works.": "كيف تعمل الخطة.",
+    "Harder and more important subjects receive a larger share of your available study hours.": "المواد الأصعب والأكثر أهمية تحصل على وقت مذاكرة أكبر.",
+    "Generate plan": "إنشاء الخطة",
+    "Please enter your subjects first.": "من فضلك أدخل المواد أولًا.",
+    "Back to planning": "العودة لتنظيم المذاكرة",
+    "Your plan": "خطتك الدراسية",
+    "Study plan for": "خطة المذاكرة لـ",
+    "Daily study": "المذاكرة يوميًا",
+    "hrs": "ساعات",
+    "Planning window": "مدة التخطيط",
+    "days": "يوم",
+    "Total hours": "إجمالي الساعات",
+    "Stress estimate": "تقدير التوتر",
+    "Low": "منخفض",
+    "High": "مرتفع",
+    "Study hours allocation": "توزيع ساعات المذاكرة",
+    "Daily study distribution": "توزيع المذاكرة اليومية",
+    "Hours per day": "ساعات يوميًا",
+    "Suggested daily timetable": "الجدول اليومي المقترح",
+    "Study: ": "مذاكرة: ",
+    "Short break": "استراحة قصيرة",
+    "Long break / meal": "استراحة طويلة / وجبة",
+    "This timetable runs late into the evening. Consider reducing your daily hours or starting earlier to protect your sleep.": "هذا الجدول يمتد لوقت متأخر. فكّر في تقليل ساعات المذاكرة أو البدء مبكرًا للحفاظ على نومك.",
+    "Stress management tips": "نصائح لإدارة التوتر",
+    "Keep your study routine consistent and balanced.": "حافظ على روتين مذاكرة ثابت ومتوازن.",
+    "Review your notes regularly instead of cramming.": "راجع ملاحظاتك بانتظام بدلًا من المذاكرة المكثفة في آخر لحظة.",
+    "Protect your sleep schedule and take regular breaks.": "حافظ على مواعيد نومك وخذ فترات راحة منتظمة.",
+    "Break large tasks into smaller, manageable steps.": "قسّم المهام الكبيرة إلى خطوات صغيرة يمكن إنجازها.",
+    "Try 25 minutes of focused work followed by a 5-minute break.": "جرّب 25 دقيقة من التركيز ثم استراحة لمدة 5 دقائق.",
+    "Start with the most important task and leave room for flexibility.": "ابدأ بالمهمة الأكثر أهمية واترك مساحة للتغييرات.",
+    "Focus on urgent tasks first and postpone non-essential work.": "ابدأ بالمهام العاجلة وأجّل ما ليس ضروريًا.",
+    "Use short study sessions with frequent breaks.": "استخدم جلسات مذاكرة قصيرة مع استراحات متكررة.",
+    "Make time for meals, rest, hydration, and sleep.": "خصص وقتًا للطعام والراحة وشرب الماء والنوم.",
+    "Consider talking with someone you trust or your student support team.": "فكّر في التحدث مع شخص تثق به أو فريق دعم الطلاب.",
+    "This tool offers study-planning suggestions, not medical advice or a clinical stress diagnosis.": "تقدم هذه الأداة اقتراحات لتنظيم المذاكرة، وليست نصيحة طبية أو تشخيصًا للتوتر.",
+    "Export": "تصدير",
+    "Download study plan": "تحميل خطة المذاكرة",
+    "Download timetable": "تحميل الجدول اليومي",
+    "Back": "السابق",
+    "Back to planning": "السابق: تنظيم المذاكرة",
+    "Start over": "البدء من جديد",
+    "ACADEMIC &amp; STRESS MANAGEMENT EXPERT SYSTEM": "نظام خبير لإدارة الدراسة والتوتر",
+    "Smart Student Assistant": "مساعد الطالب الذكي",
+    "☀️ Light theme": "☀️ الوضع الفاتح",
+    "hours": "ساعات",
+    "hours per day": "ساعات يوميًا",
+    "minutes": "دقيقة",
+    "🌙 Dark theme": "🌙 الوضع الداكن",
+}
+def tr(value):
+    """Translate visible UI strings while keeping internal rule values unchanged."""
+    if not isinstance(value, str):
+        return value
+    if st.session_state.get("language", "English") != "Arabic":
+        return value
+    result = value
+    for en, ar in sorted(TRANSLATIONS.items(), key=lambda item: len(item[0]), reverse=True):
+        result = result.replace(en, ar)
+    return result
+
+def html(markup):
+    """Render HTML, translating visible content when Arabic is selected."""
+    cleaned = "\n".join(line.strip() for line in markup.strip().splitlines())
+    cleaned = tr(cleaned)
+    st.markdown(cleaned, unsafe_allow_html=True)
+
+
+# ==================================================
+# 3. DESIGN SYSTEM
+# ==================================================
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+    --bg: #0b0f19;
+    --surface: #111726;
+    --surface-2: #0d1320;
+    --border: #1f2937;
+    --border-strong: #2b3648;
+    --text: #e5e7eb;
+    --muted: #94a3b8;
+    --faint: #64748b;
+    --accent: #6366f1;
+    --accent-hover: #4f46e5;
+}
+
+html, body, .stApp, [class*="css"] {
+    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.stApp { background: var(--bg); color: var(--text); }
+[data-testid="stHeader"] { background: transparent; }
+[data-testid="stToolbar"], #MainMenu, footer { visibility: hidden; }
+
+.block-container {
+    max-width: 1040px;
+    padding-top: 2.5rem;
+    padding-bottom: 3rem;
+}
+
+h1, h2, h3, h4, p, label, span { color: var(--text); }
+
+/* ---------- Header ---------- */
+.app-header { padding-bottom: 22px; border-bottom: 1px solid var(--border); margin-bottom: 26px; }
+.app-eyebrow { color: var(--accent); font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
+.app-title { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; margin: 8px 0 6px; color: #f8fafc; }
+.app-sub { color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 640px; }
+
+/* ---------- Stepper ---------- */
+.stepper { display: flex; align-items: center; margin-bottom: 26px; }
+.step { display: flex; align-items: center; gap: 10px; }
+.step .dot {
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border-strong); color: var(--faint); background: transparent;
+}
+.step .name { font-size: 13px; font-weight: 500; color: var(--faint); white-space: nowrap; }
+.step.done .dot { background: var(--accent); border-color: var(--accent); color: #fff; }
+.step.done .name { color: var(--muted); }
+.step.current .dot { border-color: var(--accent); color: #fff; box-shadow: 0 0 0 4px rgba(99,102,241,0.18); }
+.step.current .name { color: #f8fafc; font-weight: 600; }
+.step-line { flex: 1; height: 1px; background: var(--border-strong); margin: 0 14px; min-width: 18px; }
+.step-line.done { background: var(--accent); }
+@media (max-width: 720px) { .step:not(.current) .name { display: none; } }
+
+/* ---------- Main card ---------- */
+.st-key-slide_card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px;
+    margin: 4px 0 20px;
+}
+.card-eyebrow { color: var(--faint); font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; }
+.card-title { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; margin: 6px 0 6px; color: #f8fafc; }
+.muted { color: var(--muted); font-size: 14px; line-height: 1.7; }
+
+/* ---------- Metric / info cards ---------- */
+.metric {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px 20px;
+    height: 100%;
+}
+.metric .label { color: var(--faint); font-size: 12px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; }
+.metric .value { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin-top: 8px; color: #f8fafc; }
+.metric .unit { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+
+.estimate {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px 22px;
+    margin-top: 18px;
+}
+.estimate .row { display: flex; align-items: baseline; justify-content: space-between; }
+.estimate .score { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
+.estimate .score small { font-size: 15px; color: var(--faint); font-weight: 500; }
+.estimate .badge { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; border: 1px solid; }
+.bar { height: 6px; background: var(--border); border-radius: 999px; margin: 14px 0 12px; overflow: hidden; }
+.bar > div { height: 100%; border-radius: 999px; }
+
+/* ---------- Notes & tips ---------- */
+.note {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin: 18px 0 0;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.65;
+}
+.note b { color: var(--text); font-weight: 600; }
+
+.tip {
+    display: flex; gap: 16px; align-items: flex-start;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin: 10px 0;
+    font-size: 14px; line-height: 1.65; color: var(--text);
+}
+.tip .num { color: var(--accent); font-weight: 700; font-size: 13px; min-width: 22px; padding-top: 1px; }
+
+.section-title { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; margin: 34px 0 12px; color: #f8fafc; }
+.subject-label { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; margin-bottom: 4px; }
+
+/* ---------- Inputs ---------- */
+div[data-baseweb="input"], div[data-baseweb="select"] > div, div[data-baseweb="textarea"] {
+    background-color: var(--surface-2) !important;
+    border-color: var(--border-strong) !important;
+    border-radius: 10px !important;
+}
+div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea { color: #f8fafc !important; }
+[data-testid="stWidgetLabel"] p { font-size: 13px; font-weight: 500; color: var(--muted); }
+
+[data-testid="stVerticalBlockBorderWrapper"] {
+    border-color: var(--border) !important;
+    background: var(--surface-2);
+    border-radius: 14px !important;
+}
+
+/* ---------- Buttons ---------- */
+.stButton > button, .stDownloadButton > button {
+    width: 100%;
+    min-height: 44px;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 14px;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.stButton > button[kind="primary"],
+.stButton > button[data-testid="stBaseButton-primary"] {
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    color: #ffffff;
+}
+.stButton > button[kind="primary"]:hover,
+.stButton > button[data-testid="stBaseButton-primary"]:hover {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+    color: #ffffff;
+}
+.stButton > button[kind="secondary"],
+.stButton > button[data-testid="stBaseButton-secondary"],
+.stDownloadButton > button {
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+}
+.stButton > button[kind="secondary"]:hover,
+.stButton > button[data-testid="stBaseButton-secondary"]:hover,
+.stDownloadButton > button:hover {
+    background: var(--surface);
+    border-color: var(--accent);
+    color: #ffffff;
+}
+
+[data-testid="stDataFrame"] {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+hr { border-color: var(--border); margin: 1.6rem 0; }
+.footer { text-align: center; color: var(--faint); font-size: 12px; letter-spacing: 0.08em; padding-top: 8px; }
+</style>
+""", unsafe_allow_html=True)
+
+# Language and theme controls. These only change presentation, not the expert-system logic.
+toolbar_left, toolbar_right = st.columns([1, 1])
+with toolbar_left:
+    lang_label = "🌐 العربية" if st.session_state.language == "English" else "🌐 English"
+    if st.button(lang_label, key="toggle_language", help="Switch interface language"):
+        st.session_state.language = "Arabic" if st.session_state.language == "English" else "English"
         st.rerun()
 
-    st.divider()
+with toolbar_right:
+    theme_label = "☀️ Light theme" if st.session_state.theme_mode == "Dark" else "🌙 Dark theme"
+    if st.button(tr(theme_label), key="toggle_theme", help="Switch between dark and light themes"):
+        st.session_state.theme_mode = "Light" if st.session_state.theme_mode == "Dark" else "Dark"
+        st.rerun()
 
-    pages = [
-        ("Home", tr("home")),
-        ("Student Interview", tr("interview")),
-        ("My Profile", tr("profile")),
-        ("My Materials", tr("materials")),
-        ("Weekly Planner", tr("planner")),
-        ("Study Buddy", tr("buddy")),
-        ("My Progress", tr("progress")),
-        ("Stress Management", tr("stress")),
-        ("Settings", tr("settings"))
-    ]
+if st.session_state.theme_mode == "Light":
+    st.markdown("""
+    <style>
+    :root {
+        --bg: #f4f6fb;
+        --surface: #ffffff;
+        --surface-2: #edf1f8;
+        --border: #d8deea;
+        --border-strong: #c4ccdc;
+        --text: #172033;
+        --muted: #475569;
+        --faint: #64748b;
+        --accent: #6366f1;
+        --accent-hover: #4f46e5;
+    }
+    .stApp { background: var(--bg) !important; color: var(--text) !important; }
+    h1, h2, h3, h4, p, label, span { color: var(--text); }
+    .app-title, .card-title, .step.current .name { color: #172033 !important; }
+    .st-key-slide_card, .metric, .tip { background: #ffffff !important; }
+    .estimate, .note, [data-testid="stVerticalBlockBorderWrapper"] { background: #edf1f8 !important; }
+    div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea { color: #172033 !important; }
+    .stButton > button[data-testid="stBaseButton-secondary"],
+    .stDownloadButton > button { color: #172033 !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
-    for page_id, label in pages:
-        if st.button(label, key=f"nav_{page_id}", use_container_width=True):
-            st.session_state.page = page_id
-            st.rerun()
+if st.session_state.language == "Arabic":
+    st.markdown("""
+    <style>
+    .stApp { direction: rtl; }
+    .block-container { text-align: right; }
+    .app-header, .card-title, .card-eyebrow, .muted, .note, .tip { text-align: right; }
+    .stepper { direction: rtl; }
+    </style>
+    """, unsafe_allow_html=True)
 
-    st.divider()
-    st.caption("🤖 Study Buddy is available in the sidebar.")
+# ==================================================
+# 4. HEADER AND STEPPER
+# ==================================================
+html("""
+<div class="app-header">
+<div class="app-eyebrow">Smart Student Assistant</div>
+<div class="app-title">Academic &amp; Stress Management</div>
+<div class="app-sub">Plan your study time, organize your subjects, and get practical guidance for managing academic pressure.</div>
+</div>
+""")
 
-    if st.session_state.profile:
-        st.success("Student profile ready")
-    else:
-        st.info("Complete your student interview")
+current_step = st.session_state.step
 
-
-# =====================================================
-# HOME
-# =====================================================
-
-page = st.session_state.page
-
-if page == "Home":
-    st.title(tr("welcome"))
-    st.write(
-        "A personal system to organize your studies, "
-        "understand your academic needs and manage stress."
-        if not AR else
-        "نظامك الشخصي لتنظيم المذاكرة وفهم احتياجاتك الدراسية وإدارة التوتر."
+parts = []
+for i, label in enumerate(STEPS):
+    state = "done" if i < current_step else "current" if i == current_step else ""
+    parts.append(
+        f'<div class="step {state}"><span class="dot">{i + 1}</span>'
+        f'<span class="name">{label}</span></div>'
     )
+    if i < len(STEPS) - 1:
+        line_state = "done" if i < current_step else ""
+        parts.append(f'<div class="step-line {line_state}"></div>')
 
-    if not profile:
-        st.info(tr("no_profile"))
+html(f'<div class="stepper">{"".join(parts)}</div>')
 
-        if st.button(tr("start"), type="primary"):
-            st.session_state.page = "Student Interview"
-            st.rerun()
+# ==================================================
+# STEP 1: STUDENT PROFILE
+# ==================================================
+if current_step == 0:
 
-    else:
-        col1, col2, col3 = st.columns(3)
+    with st.container(key="slide_card"):
+        html("""
+        <div class="card-eyebrow">Step 1 · Profile</div>
+        <div class="card-title">Let’s get to know you</div>
+        <p class="muted">Enter your information to personalize your study plan.</p>
+        """)
 
-        col1.metric(
-            "📚 Subjects" if not AR else "📚 المواد",
-            len(profile.get("subjects", []))
-        )
+        st.text_input(tr("Student name"), key="student_name", placeholder=tr("Enter your name"))
 
-        col2.metric(
-            "⏰ Daily Study Hours" if not AR else "⏰ ساعات المذاكرة",
-            profile.get("study_hours", 0)
-        )
-
-        col3.metric(
-            "📅 Days to Exam" if not AR else "📅 أيام للامتحان",
-            profile.get("days_left", 0)
-        )
-
-        st.subheader(
-            "Quick Actions" if not AR else "إجراءات سريعة"
-        )
-
-        a, b, c = st.columns(3)
-
-        if a.button("📅 Weekly Planner", use_container_width=True):
-            st.session_state.page = "Weekly Planner"
-            st.rerun()
-
-        if b.button("🤖 Study Buddy", use_container_width=True):
-            st.session_state.page = "Study Buddy"
-            st.rerun()
-
-        if c.button("📂 My Materials", use_container_width=True):
-            st.session_state.page = "My Materials"
-            st.rerun()
-
-        completed = sum(
-            s["status"] == "Completed"
-            for s in st.session_state.plan
-        )
-        total = len(st.session_state.plan)
-
-        st.subheader(
-            "Your Progress" if not AR else "تقدمك"
-        )
-
-        st.progress(completed / total if total else 0)
-
-        st.write(f"{completed} / {total} sessions completed")
-
-        if not st.session_state.plan:
-            if st.button(
-                "Create your study plan" if not AR else "إنشاء جدول المذاكرة"
-            ):
-                st.session_state.page = "Weekly Planner"
-                st.rerun()
-
-
-# =====================================================
-# INTERACTIVE STUDENT INTERVIEW
-# =====================================================
-
-elif page == "Student Interview":
-    st.title(
-        "Student Assessment Interview"
-        if not AR else
-        "مقابلة تقييم الطالب"
-    )
-
-    questions = [
-        {
-            "key": "name",
-            "question": "What is your name?" if not AR else "ما اسمك؟",
-            "type": "text"
-        },
-        {
-            "key": "year",
-            "question": "Which academic year are you in?" if not AR else "في أي سنة دراسية أنت؟",
-            "type": "select",
-            "options": ["First", "Second", "Third", "Fourth", "Other"]
-        },
-        {
-            "key": "days_left",
-            "question": "How many days until your nearest exam?" if not AR else "كم يوم متبقي على أقرب امتحان؟",
-            "type": "number"
-        },
-        {
-            "key": "study_hours",
-            "question": "How many hours can you study daily?" if not AR else "كم ساعة تستطيع المذاكرة يوميًا؟",
-            "type": "number"
-        },
-        {
-            "key": "subjects_text",
-            "question": "Enter your subjects separated by commas." if not AR else "اكتب أسماء المواد وافصل بينها بفواصل.",
-            "type": "text"
-        },
-        {
-            "key": "hardest_subject",
-            "question": "Which subject is the hardest for you?" if not AR else "ما أصعب مادة بالنسبة لك؟",
-            "type": "text"
-        },
-        {
-            "key": "study_time",
-            "question": "When do you prefer studying?" if not AR else "متى تفضل المذاكرة؟",
-            "type": "select",
-            "options": ["Morning", "Afternoon", "Evening", "Night"]
-        },
-        {
-            "key": "stress",
-            "question": "How stressed do you feel? (0–10)" if not AR else "ما مستوى التوتر لديك؟ (من 0 إلى 10)",
-            "type": "slider"
-        },
-        {
-            "key": "sleep",
-            "question": "How many hours do you sleep?" if not AR else "كم ساعة تنام يوميًا؟",
-            "type": "number"
-        },
-        {
-            "key": "focus",
-            "question": "How is your concentration? (0–10)" if not AR else "ما مستوى تركيزك؟ (من 0 إلى 10)",
-            "type": "slider"
-        },
-        {
-            "key": "workload",
-            "question": "How heavy is your workload? (0–10)" if not AR else "ما حجم ضغط الدراسة لديك؟ (من 0 إلى 10)",
-            "type": "slider"
-        },
-        {
-            "key": "problem",
-            "question": "What is your biggest study problem?" if not AR else "ما أكبر مشكلة تواجهك في المذاكرة؟",
-            "type": "text"
-        }
-    ]
-
-    if "interview_answers" not in st.session_state:
-        st.session_state.interview_answers = {}
-
-    answers = st.session_state.interview_answers
-    step = st.session_state.interview_step
-
-    total_questions = len(questions)
-
-    if step < total_questions:
-        q = questions[step]
-
-        st.progress((step + 1) / total_questions)
-        st.caption(f"Question {step + 1} / {total_questions}")
-
-        st.subheader(q["question"])
-
-        key = q["key"]
-
-        if q["type"] == "text":
-            value = st.text_input(
-                "Your answer" if not AR else "إجابتك",
-                value=answers.get(key, ""),
-                key=f"answer_{key}"
-            )
-
-        elif q["type"] == "number":
-            default = answers.get(
-                key,
-                3 if key == "study_hours" else
-                7 if key == "sleep" else 7
-            )
-            value = st.number_input(
-                "Your answer" if not AR else "إجابتك",
-                min_value=0,
-                max_value=24 if key in ("study_hours", "sleep") else 365,
-                value=int(default),
-                key=f"answer_{key}"
-            )
-
-        elif q["type"] == "slider":
-            value = st.slider(
-                "Choose a value" if not AR else "اختر قيمة",
-                0, 10,
-                int(answers.get(key, 5)),
-                key=f"answer_{key}"
-            )
-
-        else:
-            value = st.selectbox(
-                "Choose" if not AR else "اختر",
-                q["options"],
-                index=q["options"].index(
-                    answers.get(key, q["options"][0])
-                ) if answers.get(key) in q["options"] else 0,
-                key=f"answer_{key}"
-            )
-
-        col1, col2 = st.columns(2)
+        col1, col2 = st.columns(2, gap="large")
 
         with col1:
-            if step > 0 and st.button(tr("back")):
-                st.session_state.interview_step -= 1
-                st.rerun()
+            st.selectbox(
+                tr("Academic level"),
+                ["University student", "High school student", "Preparatory student", "Other"],
+                format_func=tr,
+                key="study_level",
+            )
+            st.slider(tr("Available study hours per day"), 1, 12, key="daily_hours")
 
         with col2:
-            if st.button(tr("next"), type="primary"):
-                if q["type"] == "text" and not value.strip():
-                    st.warning(
-                        "Please enter an answer."
-                        if not AR else
-                        "من فضلك أدخل إجابة."
-                    )
-                else:
-                    answers[key] = value
-                    st.session_state.interview_answers = answers
-                    st.session_state.interview_step += 1
-                    st.rerun()
-
-    else:
-        st.success(
-            "Interview completed!" if not AR else "اكتملت المقابلة!"
-        )
-
-        if st.button(
-            "Analyze my answers" if not AR else "حلل إجاباتي",
-            type="primary"
-        ):
-            raw_subjects = answers.get("subjects_text", "")
-            subject_names = [
-                x.strip() for x in raw_subjects.split(",")
-                if x.strip()
-            ]
-
-            subjects = []
-
-            for name in subject_names:
-                subjects.append({
-                    "name": name,
-                    "difficulty": 5 if name == answers.get("hardest_subject") else 3,
-                    "priority": 5 if name == answers.get("hardest_subject") else 3,
-                    "exam_days": int(answers.get("days_left", 30))
-                })
-
-            new_profile = {
-                "name": answers.get("name", ""),
-                "year": answers.get("year", ""),
-                "days_left": int(answers.get("days_left", 7)),
-                "study_hours": float(answers.get("study_hours", 3)),
-                "subjects": subjects,
-                "hardest_subject": answers.get("hardest_subject", ""),
-                "study_time": answers.get("study_time", ""),
-                "stress": int(answers.get("stress", 5)),
-                "sleep": float(answers.get("sleep", 7)),
-                "focus": int(answers.get("focus", 5)),
-                "workload": int(answers.get("workload", 5)),
-                "problem": answers.get("problem", "")
-            }
-
-            st.session_state.profile = new_profile
-            save_profile(new_profile)
-            st.session_state.show_recommendations = True
-            st.rerun()
-
-    if st.session_state.show_recommendations and profile:
-        st.divider()
-
-        st.subheader(
-            "Expert System Analysis" if not AR else "تحليل النظام الخبير"
-        )
-
-        for rule in expert_evaluation(profile):
-            st.markdown(f"""
-            <div class="card">
-                <b>{rule['id']} – {rule['title']}</b><br>
-                {rule['reason']}<br>
-                <b>Recommendation:</b> {rule['action']}
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.warning(
-            "Review your answers before creating your plan."
-            if not AR else
-            "راجِع إجاباتك قبل إنشاء الجدول."
-        )
-
-        if st.button(
-            "Approve and create my plan" if not AR else "موافق، أنشئ جدولي",
-            type="primary"
-        ):
-            st.session_state.plan = make_weekly_plan(profile)
-            save_plan(st.session_state.plan)
-            st.session_state.page = "Weekly Planner"
-            st.rerun()
-
-
-# =====================================================
-# STUDENT PROFILE
-# =====================================================
-
-elif page == "My Profile":
-    st.title(tr("profile"))
-
-    if not profile:
-        st.info(tr("no_profile"))
-        if st.button(tr("start")):
-            st.session_state.page = "Student Interview"
-            st.rerun()
-    else:
-        st.write("###", profile.get("name", "Student"))
-
-        st.write("Academic year:", profile.get("year"))
-        st.write("Study hours:", profile.get("study_hours"))
-        st.write("Nearest exam:", profile.get("days_left"), "days")
-
-        st.subheader("Subjects")
-
-        for subject in profile.get("subjects", []):
-            st.write(
-                f"📘 {subject['name']} – "
-                f"Difficulty: {subject['difficulty']}/5"
+            st.selectbox(
+                tr("Preferred study style"),
+                ["Short focused sessions", "Long focused sessions", "Mix of both"],
+                format_func=tr,
+                key="study_style",
             )
+            st.slider(tr("Days remaining until exam or deadline"), 1, 90, key="exam_days")
 
-        if st.button("Retake interview"):
-            st.session_state.interview_step = 0
-            st.session_state.interview_answers = {}
-            st.session_state.show_recommendations = False
-            st.session_state.page = "Student Interview"
-            st.rerun()
+        html("""
+        <div class="note"><b>Tip.</b> A balanced and realistic routine is easier to maintain than an overloaded schedule.</div>
+        """)
 
-
-# =====================================================
-# MY MATERIALS
-# =====================================================
-
-elif page == "My Materials":
-    st.title(tr("materials"))
-
-    st.write(
-        "Upload PDF lectures. Extracted text can be used by Study Buddy."
-        if not AR else
-        "ارفعي ملفات المحاضرات PDF ليتم استخراج النص واستخدامه بواسطة المساعد الذكي."
-    )
-
-    uploaded_files = st.file_uploader(
-        "Upload PDF files",
-        type=["pdf"],
-        accept_multiple_files=True
-    )
-
-    if uploaded_files:
-        for file in uploaded_files:
-            subject = st.text_input(
-                f"Subject for {file.name}",
-                key=f"subject_{file.name}"
-            )
-
-            if st.button(
-                f"Analyze and save {file.name}",
-                key=f"save_{file.name}"
-            ):
-                content = extract_pdf(file)
-
-                if content:
-                    save_material(file.name, subject or "General", content)
-                    st.success("File extracted and saved.")
-                else:
-                    st.warning(
-                        "No readable text found. Scanned PDF OCR is not included yet."
-                    )
-
-    st.divider()
-    st.subheader("Saved Materials")
-
-    materials = load_materials()
-
-    if not materials:
-        st.info("No materials uploaded yet.")
-    else:
-        for material in materials:
-            with st.expander(f"📄 {material[1]} – {material[2]}"):
-                st.write(material[3][:3000] or "No text extracted.")
-
-                if st.button(
-                    "Delete",
-                    key=f"delete_material_{material[0]}"
-                ):
-                    delete_material(material[0])
-                    st.rerun()
-
-
-# =====================================================
-# WEEKLY PLANNER
-# =====================================================
-
-elif page == "Weekly Planner":
-    st.title(tr("planner"))
-
-    if not profile:
-        st.info(tr("no_profile"))
-    else:
-        if st.button(
-            "Generate / Refresh Weekly Plan"
-            if not AR else
-            "إنشاء / تحديث الجدول الأسبوعي",
-            type="primary"
-        ):
-            st.session_state.plan = make_weekly_plan(profile)
-            save_plan(st.session_state.plan)
-            st.rerun()
-
-        plan = st.session_state.plan
-
-        if plan:
-            total_hours = sum(x["duration"] for x in plan)
-            completed = sum(
-                x["status"] == "Completed" for x in plan
-            )
-
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Total Hours", total_hours)
-            c2.metric("Sessions", len(plan))
-            c3.metric("Completed", completed)
-
-            st.progress(
-                completed / len(plan) if plan else 0
-            )
-
-            for offset in range(7):
-                day_date = date.today() + timedelta(days=offset)
-                day_sessions = [
-                    (i, s) for i, s in enumerate(plan)
-                    if s["date"] == day_date.isoformat()
-                ]
-
-                with st.expander(
-                    f"📅 {day_date.strftime('%A – %d %B')} "
-                    f"({len(day_sessions)} sessions)",
-                    expanded=(offset == 0)
-                ):
-                    if not day_sessions:
-                        st.write("No sessions scheduled.")
-
-                    for index, session in day_sessions:
-                        col1, col2 = st.columns([3, 1])
-
-                        col1.write(
-                            f"📘 **{session['subject']}** – "
-                            f"{session['duration']} hours"
-                        )
-
-                        if session["status"] == "Completed":
-                            col2.success("Completed")
-                        else:
-                            if col2.button(
-                                "Complete",
-                                key=f"complete_{index}"
-                            ):
-                                st.session_state.plan[index]["status"] = "Completed"
-                                st.session_state.xp += 10
-                                save_plan(st.session_state.plan)
-                                st.rerun()
-
-            st.divider()
-
-            if st.button(
-                "Reschedule pending sessions"
-                if not AR else
-                "إعادة جدولة الجلسات المتبقية"
-            ):
-                today = date.today()
-                pending = [
-                    s for s in plan
-                    if s["status"] != "Completed"
-                    and date.fromisoformat(s["date"]) >= today
-                ]
-
-                completed_sessions = [
-                    s for s in plan
-                    if s["status"] == "Completed"
-                    or date.fromisoformat(s["date"]) < today
-                ]
-
-                occupied = {}
-                for s in completed_sessions:
-                    occupied[s["date"]] = occupied.get(s["date"], 0) + 1
-
-                new_sessions = []
-                overflow = []
-
-                for session in pending:
-                    placed = False
-
-                    for day_offset in range(14):
-                        target = today + timedelta(days=day_offset)
-                        target_str = target.isoformat()
-
-                        if occupied.get(target_str, 0) < 3:
-                            updated = dict(session)
-                            updated["date"] = target_str
-                            updated["day"] = target.strftime("%A")
-                            new_sessions.append(updated)
-                            occupied[target_str] = occupied.get(target_str, 0) + 1
-                            placed = True
-                            break
-
-                    if not placed:
-                        overflow.append(session)
-
-                st.session_state.plan = completed_sessions + new_sessions
-                save_plan(st.session_state.plan)
-
-                st.success("Pending sessions rescheduled.")
-                if overflow:
-                    st.warning(
-                        f"{len(overflow)} sessions could not be scheduled."
-                    )
-
+    _, next_col = st.columns([3, 1])
+    with next_col:
+        if st.button(tr("Continue"), key="profile_next", type="primary"):
+            if not st.session_state.student_name.strip():
+                st.error(tr("Please enter your name before continuing."))
+            else:
+                go_next()
                 st.rerun()
 
-        else:
-            st.info("Your plan has not been created yet.")
+# ==================================================
+# STEP 2: STRESS ASSESSMENT
+# ==================================================
+elif current_step == 1:
 
+    with st.container(key="slide_card"):
+        html("""
+        <div class="card-eyebrow">Step 2 · Well-being</div>
+        <div class="card-title">How are you feeling?</div>
+        <p class="muted">Rate your current experience. This is a self-reflection tool, not a medical diagnosis.</p>
+        """)
 
-# =====================================================
-# STUDY BUDDY CHAT
-# =====================================================
+        col1, col2 = st.columns(2, gap="large")
+        with col1:
+            st.slider(tr("How stressed do you feel about studying?"), 0, 10, key="stress_score")
+            st.slider(tr("How well can you concentrate?"), 0, 10, key="focus_score")
+        with col2:
+            st.slider(tr("How well are you sleeping?"), 0, 10, key="sleep_score")
+            st.select_slider(
+                tr("How manageable is your workload?"),
+                options=list(WORKLOAD_SCORES.keys()),
+                format_func=tr,
+                key="workload",
+            )
 
-elif page == "Study Buddy":
-    st.title("🤖 Study Buddy")
-    st.caption(
-        "Your AI academic companion."
-        if not AR else
-        "مساعدك الذكي في المذاكرة."
-    )
+        score = compute_stress()
+        level, color = stress_level(score)
 
-    for role, message in st.session_state.chat_history:
-        with st.chat_message(role):
-            st.markdown(message)
+        html(f"""
+        <div class="estimate">
+        <div class="row">
+        <div>
+        <div class="card-eyebrow">Your stress estimate</div>
+        <div class="score" style="color:{color}">{score}<small> / 10</small></div>
+        </div>
+        <span class="badge" style="color:{color};border-color:{color}55;background:{color}14">{level}</span>
+        </div>
+        <div class="bar"><div style="width:{score * 10}%;background:{color}"></div></div>
+        <div class="muted">Calculated from your answers using simple weighted rules. It is an organizational aid, not a validated clinical scale.</div>
+        </div>
+        """)
 
-    question = st.chat_input(
-        "Ask me about your studies..."
-        if not AR else
-        "اسألني عن المذاكرة..."
-    )
+    back_col, next_col = st.columns(2)
+    with back_col:
+        if st.button(tr("Back"), key="stress_back"):
+            go_back()
+            st.rerun()
+    with next_col:
+        if st.button(tr("Continue"), key="stress_next", type="primary"):
+            go_next()
+            st.rerun()
 
-    if question:
-        st.session_state.chat_history.append(
-            ("user", question)
+# ==================================================
+# STEP 3: SUBJECT PLANNING
+# ==================================================
+elif current_step == 2:
+
+    with st.container(key="slide_card"):
+        html("""
+        <div class="card-eyebrow">Step 3 · Study planning</div>
+        <div class="card-title">Organize your subjects</div>
+        <p class="muted">Add each subject and set its difficulty and priority.</p>
+        """)
+
+        st.number_input(
+            tr("How many subjects do you have?"),
+            min_value=1,
+            max_value=MAX_SUBJECTS,
+            step=1,
+            key="subject_count",
         )
-        save_chat("user", question)
 
-        with st.chat_message("user"):
-            st.markdown(question)
+        subjects_data = []
 
-        with st.chat_message("assistant"):
-            with st.spinner("Study Buddy is thinking..."):
-                answer = get_ai_response(question)
-                st.markdown(answer)
+        for i in range(int(st.session_state.subject_count)):
+            with st.container(border=True):
+                html(f'<div class="subject-label">{tr("SUBJECT")} {i + 1}</div>')
 
-        st.session_state.chat_history.append(
-            ("assistant", answer)
+                c1, c2, c3 = st.columns([2, 1, 1])
+                with c1:
+                    subject = st.text_input(
+                        tr("Subject name"),
+                        key=f"subject_name_{i}",
+                        placeholder=f"{tr('Subject name')} {i + 1}",
+                    )
+                with c2:
+                    difficulty = st.selectbox(
+                        tr("Difficulty"), ["Easy", "Medium", "Hard"], format_func=tr, key=f"difficulty_{i}"
+                    )
+                with c3:
+                    priority = st.selectbox(
+                        tr("Priority"),
+                        ["Normal", "Important", "Very important"],
+                        format_func=tr,
+                        key=f"priority_{i}",
+                    )
+
+            difficulty_weight = {"Easy": 1.0, "Medium": 1.5, "Hard": 2.0}[difficulty]
+            priority_weight = {"Normal": 1.0, "Important": 1.3, "Very important": 1.6}[priority]
+
+            subjects_data.append({
+                "Subject": subject.strip() or f"Subject {i + 1}",
+                "Difficulty": difficulty,
+                "Priority": priority,
+                "Weight": difficulty_weight * priority_weight,
+            })
+
+        st.session_state.subjects_data = subjects_data
+
+        html("""
+        <div class="note"><b>How it works.</b> Harder and more important subjects receive a larger share of your available study hours.</div>
+        """)
+
+    back_col, next_col = st.columns(2)
+    with back_col:
+        if st.button(tr("Back"), key="subjects_back"):
+            go_back()
+            st.rerun()
+    with next_col:
+        if st.button(tr("Generate plan"), key="subjects_next", type="primary"):
+            go_next()
+            st.rerun()
+
+# ==================================================
+# STEP 4: RESULTS
+# ==================================================
+elif current_step == 3:
+
+    saved = st.session_state.get("subjects_data", [])
+
+    if not saved:
+        st.warning(tr("Please enter your subjects first."))
+        if st.button(tr("Back to planning"), key="results_missing_back"):
+            st.session_state.step = 2
+            st.rerun()
+        st.stop()
+
+    subjects_data = [dict(s) for s in saved]
+
+    name = st.session_state.student_name
+    daily_hours = st.session_state.daily_hours
+    exam_days = st.session_state.exam_days
+    stress_score = compute_stress()
+    level, color = stress_level(stress_score)
+
+    total_weight = sum(s["Weight"] for s in subjects_data)
+    total_hours = daily_hours * exam_days
+
+    for s in subjects_data:
+        s["Daily Hours"] = daily_hours * s["Weight"] / total_weight
+        s["Total Planned Hours"] = total_hours * s["Weight"] / total_weight
+
+    html(f"""
+    <div class="card-eyebrow">Your plan</div>
+    <div class="app-title" style="margin-top:6px">Study plan for {name}</div>
+    <p class="muted">{tr(st.session_state.study_level)} · {tr(st.session_state.study_style)}</p>
+    """)
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        html(f'<div class="metric"><div class="label">Daily study</div>'
+             f'<div class="value">{daily_hours}<span class="unit">hrs</span></div></div>')
+    with m2:
+        html(f'<div class="metric"><div class="label">Planning window</div>'
+             f'<div class="value">{exam_days}<span class="unit">days</span></div></div>')
+    with m3:
+        html(f'<div class="metric"><div class="label">Total hours</div>'
+             f'<div class="value">{total_hours}<span class="unit">hrs</span></div></div>')
+    with m4:
+        html(f'<div class="metric"><div class="label">Stress estimate</div>'
+             f'<div class="value" style="color:{color}">{stress_score}'
+             f'<span class="unit">/ 10 · {level}</span></div></div>')
+
+    # ---- Allocation table ----
+    html('<div class="section-title">Study hours allocation</div>')
+
+    df = pd.DataFrame(subjects_data)
+    display_df = df[["Subject", "Difficulty", "Priority", "Daily Hours", "Total Planned Hours"]].copy()
+    display_df["Daily Hours"] = display_df["Daily Hours"].round(2)
+    display_df["Total Planned Hours"] = display_df["Total Planned Hours"].round(2)
+
+    if st.session_state.language == "Arabic":
+        display_df["Difficulty"] = display_df["Difficulty"].map({
+            "Easy": "سهلة", "Medium": "متوسطة", "Hard": "صعبة"
+        })
+        display_df["Priority"] = display_df["Priority"].map({
+            "Normal": "عادية", "Important": "مهمة", "Very important": "مهمة جدًا"
+        })
+        display_df = display_df.rename(columns={
+            "Subject": "المادة", "Difficulty": "الصعوبة", "Priority": "الأولوية",
+            "Daily Hours": "ساعات يوميًا", "Total Planned Hours": "إجمالي الساعات"
+        })
+    st.dataframe(display_df, hide_index=True)
+
+    # ---- Chart ----
+    html('<div class="section-title">Daily study distribution</div>')
+
+    chart_df = df[["Subject", "Daily Hours"]].copy().sort_values("Daily Hours", ascending=True)
+
+    fig, ax = plt.subplots(figsize=(10, max(2.4, 0.55 * len(chart_df) + 1)))
+    fig.patch.set_facecolor("#f4f6fb" if st.session_state.theme_mode == "Light" else "#0b0f19")
+    ax.set_facecolor("#f4f6fb" if st.session_state.theme_mode == "Light" else "#0b0f19")
+
+    bars = ax.barh(chart_df["Subject"], chart_df["Daily Hours"], color=ACCENT, height=0.55)
+
+    ax.set_xlabel(tr("Hours per day"), color=("#475569" if st.session_state.theme_mode == "Light" else "#94a3b8"), fontsize=10)
+    ax.tick_params(axis="x", colors=("#475569" if st.session_state.theme_mode == "Light" else "#94a3b8"), labelsize=9)
+    ax.tick_params(axis="y", colors=("#172033" if st.session_state.theme_mode == "Light" else "#e5e7eb"), labelsize=10, length=0)
+    for spine in ("top", "right", "left"):
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_color("#d8deea" if st.session_state.theme_mode == "Light" else "#1f2937")
+    ax.grid(axis="x", color="#d8deea" if st.session_state.theme_mode == "Light" else "#1f2937", linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.set_xlim(0, chart_df["Daily Hours"].max() * 1.18)
+
+    for bar in bars:
+        ax.text(
+            bar.get_width() + chart_df["Daily Hours"].max() * 0.015,
+            bar.get_y() + bar.get_height() / 2,
+            f"{bar.get_width():.1f} h",
+            va="center",
+            color=("#172033" if st.session_state.theme_mode == "Light" else "#e5e7eb"),
+            fontsize=10,
         )
-        save_chat("assistant", answer)
 
-    if st.button("Clear Chat"):
-        clear_chat()
-        st.session_state.chat_history = []
-        st.rerun()
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
 
+    # ---- Timetable ----
+    html('<div class="section-title">Suggested daily timetable</div>')
 
-# =====================================================
-# MY PROGRESS
-# =====================================================
+    ordered = sorted(subjects_data, key=lambda x: x["Weight"], reverse=True)
 
-elif page == "My Progress":
-    st.title(tr("progress"))
+    def format_time(hour_value):
+        total_minutes = round(hour_value * 60)
+        hour = (total_minutes // 60) % 24
+        minute = total_minutes % 60
+        suffix = "AM" if hour < 12 else "PM"
+        return f"{hour % 12 or 12}:{minute:02d} {suffix}"
 
-    plan = st.session_state.plan
+    timetable = []
+    current_time = 9.0
 
-    if not plan:
-        st.info("Create your weekly plan to track progress.")
+    for i, s in enumerate(ordered):
+        duration = s["Daily Hours"]
+        end_time = current_time + duration
+
+        timetable.append({
+            "Time": f"{format_time(current_time)} - {format_time(end_time)}",
+            "Activity": f"{tr('Study: ')}{s['Subject']}",
+            "Duration": f"{duration:.1f} {tr('hours')}",
+        })
+        current_time = end_time
+
+        if i < len(ordered) - 1:
+            timetable.append({
+                "Time": f"{format_time(current_time)} - {format_time(current_time + 0.25)}",
+                "Activity": tr("Short break"),
+                "Duration": f"15 {tr('minutes')}",
+            })
+            current_time += 0.25
+
+            if (i + 1) % 2 == 0 and i < len(ordered) - 2:
+                timetable.append({
+                    "Time": f"{format_time(current_time)} - {format_time(current_time + 0.5)}",
+                    "Activity": tr("Long break / meal"),
+                    "Duration": f"30 {tr('minutes')}",
+                })
+                current_time += 0.5
+
+    timetable_df = pd.DataFrame(timetable)
+    if st.session_state.language == "Arabic":
+        # الأول نترجم محتوى عمود Activity وهو لسه اسمه "Activity"
+        timetable_df["Activity"] = timetable_df["Activity"].map(
+            lambda x: x.replace("Study: ", "مذاكرة: ").replace("Short break", "استراحة قصيرة").replace("Long break / meal", "استراحة طويلة / وجبة")
+        )
+        # وبعد كده نغير أسماء الأعمدة
+        timetable_df = timetable_df.rename(columns={
+            "Time": "الوقت", "Activity": "النشاط", "Duration": "المدة"
+        })
+    st.dataframe(timetable_df, hide_index=True)
+
+    if current_time > 22:
+        st.warning(
+            tr("This timetable runs late into the evening. Consider reducing your daily hours or starting earlier to protect your sleep.")
+        )
+
+    # ---- Tips ----
+    html('<div class="section-title">Stress management tips</div>')
+
+    if stress_score <= 3:
+        tips = [
+            "Keep your study routine consistent and balanced.",
+            "Review your notes regularly instead of cramming.",
+            "Protect your sleep schedule and take regular breaks.",
+        ]
+    elif stress_score <= 6:
+        tips = [
+            "Break large tasks into smaller, manageable steps.",
+            "Try 25 minutes of focused work followed by a 5-minute break.",
+            "Start with the most important task and leave room for flexibility.",
+        ]
     else:
-        completed = [
-            s for s in plan if s["status"] == "Completed"
+        tips = [
+            "Focus on urgent tasks first and postpone non-essential work.",
+            "Use short study sessions with frequent breaks.",
+            "Make time for meals, rest, hydration, and sleep.",
+            "Consider talking with someone you trust or your student support team.",
         ]
 
-        pending = len(plan) - len(completed)
-        completed_hours = sum(
-            s["duration"] for s in completed
+    for n, tip in enumerate(tips, start=1):
+        html(f'<div class="tip"><span class="num">{n:02d}</span><span>{tip}</span></div>')
+
+    st.caption(tr("This tool offers study-planning suggestions, not medical advice or a clinical stress diagnosis."))
+
+    # ---- Downloads ----
+    html('<div class="section-title">Export</div>')
+
+    d1, d2 = st.columns(2)
+    with d1:
+        st.download_button(
+            tr("Download study plan"),
+            data=display_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name="study_plan.csv",
+            mime="text/csv",
+        )
+    with d2:
+        st.download_button(
+            tr("Download timetable"),
+            data=timetable_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name="daily_timetable.csv",
+            mime="text/csv",
         )
 
-        c1, c2, c3 = st.columns(3)
+    st.markdown("---")
 
-        c1.metric("Completed Sessions", len(completed))
-        c2.metric("Remaining Sessions", pending)
-        c3.metric("Completed Hours", completed_hours)
+    back_col, restart_col = st.columns(2)
+    with back_col:
+        if st.button(tr("Back to planning"), key="results_back"):
+            go_back()
+            st.rerun()
+    with restart_col:
+        if st.button(tr("Start over"), key="restart", type="primary"):
+            st.session_state.clear()
+            st.rerun()
 
-        st.progress(len(completed) / len(plan))
-
-        st.subheader("Subject Progress")
-
-        progress_data = {}
-
-        for session in plan:
-            subject = session["subject"]
-            if subject not in progress_data:
-                progress_data[subject] = {
-                    "Completed": 0,
-                    "Total": 0
-                }
-
-            progress_data[subject]["Total"] += session["duration"]
-
-            if session["status"] == "Completed":
-                progress_data[subject]["Completed"] += session["duration"]
-
-        for subject, values in progress_data.items():
-            percentage = (
-                values["Completed"] / values["Total"]
-                if values["Total"] else 0
-            )
-
-            st.write(f"**{subject}**")
-            st.progress(percentage)
-            st.caption(
-                f"{values['Completed']} / {values['Total']} hours"
-            )
-
-        st.subheader("Study Level")
-
-        xp = st.session_state.xp
-
-        if xp < 50:
-            level = "🐣 Beginner"
-        elif xp < 150:
-            level = "🐥 Focused Learner"
-        elif xp < 300:
-            level = "🦉 Study Champion"
-        else:
-            level = "🦅 Study Master"
-
-        st.metric("Your Level", level)
-        st.metric("XP", xp)
-
-
-# =====================================================
-# STRESS MANAGEMENT
-# =====================================================
-
-elif page == "Stress Management":
-    st.title(tr("stress"))
-
-    if not profile:
-        st.info(tr("no_profile"))
-    else:
-        rules = expert_evaluation(profile)
-
-        st.subheader("Your Assessment")
-
-        st.metric(
-            "Stress Level",
-            f"{profile.get('stress', 0)}/10"
-        )
-
-        st.metric(
-            "Sleep Hours",
-            profile.get("sleep", 0)
-        )
-
-        st.metric(
-            "Focus",
-            f"{profile.get('focus', 0)}/10"
-        )
-
-        st.subheader("Recommendations")
-
-        for rule in rules:
-            st.markdown(f"""
-            <div class="card">
-                <b>{rule['title']}</b><br>
-                {rule['action']}
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.info(
-            "Remember: short breaks, adequate sleep, and realistic goals can help."
-            if not AR else
-            "تذكّر: الفواصل القصيرة والنوم الكافي والأهداف الواقعية قد تساعدك."
-        )
-
-
-# =====================================================
-# SETTINGS
-# =====================================================
-
-elif page == "Settings":
-    st.title(tr("settings"))
-
-    st.subheader("Appearance")
-
-    theme = st.selectbox(
-        "Accent Color",
-        list(THEMES.keys()),
-        index=list(THEMES.keys()).index(st.session_state.theme)
-    )
-
-    mode = st.radio(
-        "Display Mode",
-        ["Dark", "Light"],
-        horizontal=True,
-        index=0 if st.session_state.mode == "Dark" else 1
-    )
-
-    if st.button("Save Settings"):
-        st.session_state.theme = theme
-        st.session_state.mode = mode
-        st.success("Settings updated. Refresh the app to apply all changes.")
-        st.rerun()
-
-    st.divider()
-
-    st.subheader("AI Connection")
-
-    if st.secrets.get("OPENAI_API_KEY", ""):
-        st.success("AI API key is configured.")
-    else:
-        st.warning("AI API key has not been configured yet.")
-
-
-# =====================================================
+# ==================================================
 # FOOTER
-# =====================================================
-
-st.divider()
-
-st.caption(
-    "Smart Student Assistant | Academic & Stress Management Expert System"
-)
+# ==================================================
+st.markdown("---")
+html('<div class="footer">ACADEMIC &amp; STRESS MANAGEMENT EXPERT SYSTEM</div>')
