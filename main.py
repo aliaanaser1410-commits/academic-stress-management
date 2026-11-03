@@ -1,4 +1,5 @@
 import math
+from datetime import date, timedelta
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -54,21 +55,29 @@ defaults = {
     "focus_score": 6,
     "workload": "Moderate",
     "subject_count": 3,
+    "rest_days": [],
 }
 
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-# Streamlit drops the state of widgets that are not rendered in the current
-# run. Re-assigning keeps every answer alive while moving between steps.
 MAX_SUBJECTS = 10
 
 for key in defaults:
     st.session_state[key] = st.session_state[key]
 
 for i in range(MAX_SUBJECTS):
-    for prefix in ("subject_name_", "difficulty_", "priority_"):
+    for prefix in (
+        "subject_name_",
+        "exam_date_",
+        "total_chapters_",
+        "completed_chapters_",
+        "difficulty_",
+        "priority_",
+        "student_level_",
+        "hours_per_chapter_",
+    ):
         k = f"{prefix}{i}"
         if k in st.session_state:
             st.session_state[k] = st.session_state[k]
@@ -157,11 +166,14 @@ TRANSLATIONS = {
     "Your stress estimate": "تقدير مستوى التوتر",
     "Calculated from your answers using simple weighted rules. It is an organizational aid, not a validated clinical scale.": "تم حسابه من إجاباتك باستخدام قواعد بسيطة. وهو أداة تنظيمية وليس مقياسًا طبيًا معتمدًا.",
     "Step 3 · Study planning": "الخطوة 3 · تنظيم المذاكرة",
-    "Organize your subjects": "نظّم موادك الدراسية",
-    "Add each subject and set its difficulty and priority.": "أضف كل مادة وحدد مستوى صعوبتها وأهميتها.",
+    "Organize your subjects": "نظّم موادك الدراسية ومناهجها",
+    "Add each subject and set its difficulty and priority.": "أدخل تفاصيل المواد والفصول والمواعيد لتصميم جدول حقيقي.",
     "How many subjects do you have?": "كم مادة لديك؟",
     "SUBJECT": "المادة",
     "Subject name": "اسم المادة",
+    "Exam Date": "تاريخ الامتحان",
+    "Total Chapters / Lectures": "إجمالي عدد الفصول / المحاضرات",
+    "Completed Chapters": "الفصول التي تم انتهائها",
     "Difficulty": "الصعوبة",
     "Easy": "سهلة",
     "Medium": "متوسطة",
@@ -170,6 +182,19 @@ TRANSLATIONS = {
     "Normal": "عادية",
     "Important": "مهمة",
     "Very important": "مهمة جدًا",
+    "Student Level in Subject": "مستواك الحالي في المادة",
+    "Good": "جيد",
+    "Average": "متوسط",
+    "Weak": "ضعيف",
+    "Hours per Chapter": "الساعات المتوقعة للفصل الواحد",
+    "Rest Days (No Study)": "أيام الراحة (لا يوجد مذاكرة فيها)",
+    "Monday": "الإثنين",
+    "Tuesday": "الثلاثاء",
+    "Wednesday": "الأربعاء",
+    "Thursday": "الخميس",
+    "Friday": "الجمعة",
+    "Saturday": "السبت",
+    "Sunday": "الأحد",
     "How it works.": "كيف تعمل الخطة.",
     "Harder and more important subjects receive a larger share of your available study hours.": "المواد الأصعب والأكثر أهمية تحصل على وقت مذاكرة أكبر.",
     "Generate plan": "إنشاء الخطة",
@@ -219,6 +244,8 @@ TRANSLATIONS = {
     "minutes": "دقيقة",
     "🌙 Dark theme": "🌙 الوضع الداكن",
 }
+
+
 def tr(value):
     """Translate visible UI strings while keeping internal rule values unchanged."""
     if not isinstance(value, str):
@@ -226,9 +253,12 @@ def tr(value):
     if st.session_state.get("language", "English") != "Arabic":
         return value
     result = value
-    for en, ar in sorted(TRANSLATIONS.items(), key=lambda item: len(item[0]), reverse=True):
+    for en, ar in sorted(
+        TRANSLATIONS.items(), key=lambda item: len(item[0]), reverse=True
+    ):
         result = result.replace(en, ar)
     return result
+
 
 def html(markup):
     """Render HTML, translating visible content when Arabic is selected."""
@@ -240,7 +270,8 @@ def html(markup):
 # ==================================================
 # 3. DESIGN SYSTEM
 # ==================================================
-st.markdown("""
+st.markdown(
+    """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
@@ -422,24 +453,43 @@ div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea { color: 
 hr { border-color: var(--border); margin: 1.6rem 0; }
 .footer { text-align: center; color: var(--faint); font-size: 12px; letter-spacing: 0.08em; padding-top: 8px; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
-# Language and theme controls. These only change presentation, not the expert-system logic.
+# Language and theme controls.
 toolbar_left, toolbar_right = st.columns([1, 1])
 with toolbar_left:
-    lang_label = "🌐 العربية" if st.session_state.language == "English" else "🌐 English"
-    if st.button(lang_label, key="toggle_language", help="Switch interface language"):
-        st.session_state.language = "Arabic" if st.session_state.language == "English" else "English"
+    lang_label = (
+        "🌐 العربية" if st.session_state.language == "English" else "🌐 English"
+    )
+    if st.button(
+        lang_label, key="toggle_language", help="Switch interface language"
+    ):
+        st.session_state.language = (
+            "Arabic" if st.session_state.language == "English" else "English"
+        )
         st.rerun()
 
 with toolbar_right:
-    theme_label = "☀️ Light theme" if st.session_state.theme_mode == "Dark" else "🌙 Dark theme"
-    if st.button(tr(theme_label), key="toggle_theme", help="Switch between dark and light themes"):
-        st.session_state.theme_mode = "Light" if st.session_state.theme_mode == "Dark" else "Dark"
+    theme_label = (
+        "☀️ Light theme"
+        if st.session_state.theme_mode == "Dark"
+        else "🌙 Dark theme"
+    )
+    if st.button(
+        tr(theme_label),
+        key="toggle_theme",
+        help="Switch between dark and light themes",
+    ):
+        st.session_state.theme_mode = (
+            "Light" if st.session_state.theme_mode == "Dark" else "Dark"
+        )
         st.rerun()
 
 if st.session_state.theme_mode == "Light":
-    st.markdown("""
+    st.markdown(
+        """
     <style>
     :root {
         --bg: #f4f6fb;
@@ -462,28 +512,35 @@ if st.session_state.theme_mode == "Light":
     .stButton > button[data-testid="stBaseButton-secondary"],
     .stDownloadButton > button { color: #172033 !important; }
     </style>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
 if st.session_state.language == "Arabic":
-    st.markdown("""
+    st.markdown(
+        """
     <style>
     .stApp { direction: rtl; }
     .block-container { text-align: right; }
     .app-header, .card-title, .card-eyebrow, .muted, .note, .tip { text-align: right; }
     .stepper { direction: rtl; }
     </style>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
 # ==================================================
 # 4. HEADER AND STEPPER
 # ==================================================
-html("""
+html(
+    """
 <div class="app-header">
 <div class="app-eyebrow">Smart Student Assistant</div>
 <div class="app-title">Academic &amp; Stress Management</div>
 <div class="app-sub">Plan your study time, organize your subjects, and get practical guidance for managing academic pressure.</div>
 </div>
-""")
+"""
+)
 
 current_step = st.session_state.step
 
@@ -506,37 +563,61 @@ html(f'<div class="stepper">{"".join(parts)}</div>')
 if current_step == 0:
 
     with st.container(key="slide_card"):
-        html("""
+        html(
+            """
         <div class="card-eyebrow">Step 1 · Profile</div>
         <div class="card-title">Let’s get to know you</div>
         <p class="muted">Enter your information to personalize your study plan.</p>
-        """)
+        """
+        )
 
-        st.text_input(tr("Student name"), key="student_name", placeholder=tr("Enter your name"))
+        st.text_input(
+            tr("Student name"),
+            key="student_name",
+            placeholder=tr("Enter your name"),
+        )
 
         col1, col2 = st.columns(2, gap="large")
 
         with col1:
             st.selectbox(
                 tr("Academic level"),
-                ["University student", "High school student", "Preparatory student", "Other"],
+                [
+                    "University student",
+                    "High school student",
+                    "Preparatory student",
+                    "Other",
+                ],
                 format_func=tr,
                 key="study_level",
             )
-            st.slider(tr("Available study hours per day"), 1, 12, key="daily_hours")
+            st.slider(
+                tr("Available study hours per day"), 1, 12, key="daily_hours"
+            )
 
         with col2:
             st.selectbox(
                 tr("Preferred study style"),
-                ["Short focused sessions", "Long focused sessions", "Mix of both"],
+                [
+                    "Short focused sessions",
+                    "Long focused sessions",
+                    "Mix of both",
+                ],
                 format_func=tr,
                 key="study_style",
             )
-            st.slider(tr("Days remaining until exam or deadline"), 1, 90, key="exam_days")
+            st.slider(
+                tr("Days remaining until exam or deadline"),
+                1,
+                90,
+                key="exam_days",
+            )
 
-        html("""
+        html(
+            """
         <div class="note"><b>Tip.</b> A balanced and realistic routine is easier to maintain than an overloaded schedule.</div>
-        """)
+        """
+        )
 
     _, next_col = st.columns([3, 1])
     with next_col:
@@ -553,16 +634,25 @@ if current_step == 0:
 elif current_step == 1:
 
     with st.container(key="slide_card"):
-        html("""
+        html(
+            """
         <div class="card-eyebrow">Step 2 · Well-being</div>
         <div class="card-title">How are you feeling?</div>
         <p class="muted">Rate your current experience. This is a self-reflection tool, not a medical diagnosis.</p>
-        """)
+        """
+        )
 
         col1, col2 = st.columns(2, gap="large")
         with col1:
-            st.slider(tr("How stressed do you feel about studying?"), 0, 10, key="stress_score")
-            st.slider(tr("How well can you concentrate?"), 0, 10, key="focus_score")
+            st.slider(
+                tr("How stressed do you feel about studying?"),
+                0,
+                10,
+                key="stress_score",
+            )
+            st.slider(
+                tr("How well can you concentrate?"), 0, 10, key="focus_score"
+            )
         with col2:
             st.slider(tr("How well are you sleeping?"), 0, 10, key="sleep_score")
             st.select_slider(
@@ -575,7 +665,8 @@ elif current_step == 1:
         score = compute_stress()
         level, color = stress_level(score)
 
-        html(f"""
+        html(
+            f"""
         <div class="estimate">
         <div class="row">
         <div>
@@ -587,7 +678,8 @@ elif current_step == 1:
         <div class="bar"><div style="width:{score * 10}%;background:{color}"></div></div>
         <div class="muted">Calculated from your answers using simple weighted rules. It is an organizational aid, not a validated clinical scale.</div>
         </div>
-        """)
+        """
+        )
 
     back_col, next_col = st.columns(2)
     with back_col:
@@ -600,16 +692,18 @@ elif current_step == 1:
             st.rerun()
 
 # ==================================================
-# STEP 3: SUBJECT PLANNING
+# STEP 3: SUBJECT PLANNING & ADVANCED INPUTS
 # ==================================================
 elif current_step == 2:
 
     with st.container(key="slide_card"):
-        html("""
+        html(
+            """
         <div class="card-eyebrow">Step 3 · Study planning</div>
         <div class="card-title">Organize your subjects</div>
-        <p class="muted">Add each subject and set its difficulty and priority.</p>
-        """)
+        <p class="muted">Add each subject and set its difficulty, chapters, and exam schedule.</p>
+        """
+        )
 
         st.number_input(
             tr("How many subjects do you have?"),
@@ -619,11 +713,30 @@ elif current_step == 2:
             key="subject_count",
         )
 
+        # Rest days selection
+        rest_days_options = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ]
+        st.multiselect(
+            tr("Rest Days (No Study)"),
+            options=rest_days_options,
+            format_func=tr,
+            key="rest_days",
+        )
+
         subjects_data = []
 
         for i in range(int(st.session_state.subject_count)):
             with st.container(border=True):
-                html(f'<div class="subject-label">{tr("SUBJECT")} {i + 1}</div>')
+                html(
+                    f'<div class="subject-label">{tr("SUBJECT")} {i + 1}</div>'
+                )
 
                 c1, c2, c3 = st.columns([2, 1, 1])
                 with c1:
@@ -633,10 +746,49 @@ elif current_step == 2:
                         placeholder=f"{tr('Subject name')} {i + 1}",
                     )
                 with c2:
-                    difficulty = st.selectbox(
-                        tr("Difficulty"), ["Easy", "Medium", "Hard"], format_func=tr, key=f"difficulty_{i}"
+                    exam_date = st.date_input(
+                        tr("Exam Date"),
+                        value=date.today()
+                        + timedelta(days=st.session_state.exam_days),
+                        key=f"exam_date_{i}",
                     )
                 with c3:
+                    hours_per_chapter = st.number_input(
+                        tr("Hours per Chapter"),
+                        min_value=0.5,
+                        max_value=10.0,
+                        value=2.0,
+                        step=0.5,
+                        key=f"hours_per_chapter_{i}",
+                    )
+
+                c4, c5, c6, c7 = st.columns(4)
+                with c4:
+                    total_chapters = st.number_input(
+                        tr("Total Chapters / Lectures"),
+                        min_value=1,
+                        max_value=50,
+                        value=6,
+                        step=1,
+                        key=f"total_chapters_{i}",
+                    )
+                with c5:
+                    completed_chapters = st.number_input(
+                        tr("Completed Chapters"),
+                        min_value=0,
+                        max_value=50,
+                        value=0,
+                        step=1,
+                        key=f"completed_chapters_{i}",
+                    )
+                with c6:
+                    difficulty = st.selectbox(
+                        tr("Difficulty"),
+                        ["Easy", "Medium", "Hard"],
+                        format_func=tr,
+                        key=f"difficulty_{i}",
+                    )
+                with c7:
                     priority = st.selectbox(
                         tr("Priority"),
                         ["Normal", "Important", "Very important"],
@@ -644,21 +796,48 @@ elif current_step == 2:
                         key=f"priority_{i}",
                     )
 
-            difficulty_weight = {"Easy": 1.0, "Medium": 1.5, "Hard": 2.0}[difficulty]
-            priority_weight = {"Normal": 1.0, "Important": 1.3, "Very important": 1.6}[priority]
+                c8, _ = st.columns(2)
+                with c8:
+                    student_lvl = st.selectbox(
+                        tr("Student Level in Subject"),
+                        ["Good", "Average", "Weak"],
+                        format_func=tr,
+                        key=f"student_level_{i}",
+                    )
 
-            subjects_data.append({
-                "Subject": subject.strip() or f"Subject {i + 1}",
-                "Difficulty": difficulty,
-                "Priority": priority,
-                "Weight": difficulty_weight * priority_weight,
-            })
+            # Calculation weights & remaining chapters
+            rem_chapters = max(0, total_chapters - completed_chapters)
+            diff_w = {"Easy": 1.0, "Medium": 1.5, "Hard": 2.0}[difficulty]
+            prio_w = {"Normal": 1.0, "Important": 1.3, "Very important": 1.6}[
+                priority
+            ]
+            lvl_w = {"Good": 0.9, "Average": 1.2, "Weak": 1.6}[student_lvl]
+
+            weight = diff_w * prio_w * lvl_w
+
+            subjects_data.append(
+                {
+                    "Subject": subject.strip() or f"Subject {i + 1}",
+                    "Exam Date": exam_date,
+                    "Total Chapters": total_chapters,
+                    "Completed Chapters": completed_chapters,
+                    "Remaining Chapters": rem_chapters,
+                    "Difficulty": difficulty,
+                    "Priority": priority,
+                    "Student Level": student_lvl,
+                    "Hours Per Chapter": hours_per_chapter,
+                    "Total Required Hours": rem_chapters * hours_per_chapter,
+                    "Weight": weight,
+                }
+            )
 
         st.session_state.subjects_data = subjects_data
 
-        html("""
-        <div class="note"><b>How it works.</b> Harder and more important subjects receive a larger share of your available study hours.</div>
-        """)
+        html(
+            """
+        <div class="note"><b>How it works.</b> Harder and more important subjects, along with weaker student levels and closer exams, receive priority in your daily study schedule.</div>
+        """
+        )
 
     back_col, next_col = st.columns(2)
     with back_col:
@@ -671,7 +850,7 @@ elif current_step == 2:
             st.rerun()
 
 # ==================================================
-# STEP 4: RESULTS
+# STEP 4: RESULTS & REAL DAILY SCHEDULE BUILDER
 # ==================================================
 elif current_step == 3:
 
@@ -696,69 +875,253 @@ elif current_step == 3:
     total_hours = daily_hours * exam_days
 
     for s in subjects_data:
-        s["Daily Hours"] = daily_hours * s["Weight"] / total_weight
-        s["Total Planned Hours"] = total_hours * s["Weight"] / total_weight
+        s["Daily Hours"] = (
+            daily_hours * s["Weight"] / total_weight
+            if total_weight > 0
+            else 0
+        )
+        s["Total Planned Hours"] = (
+            total_hours * s["Weight"] / total_weight if total_weight > 0 else 0
+        )
 
-    html(f"""
+    html(
+        f"""
     <div class="card-eyebrow">Your plan</div>
     <div class="app-title" style="margin-top:6px">Study plan for {name}</div>
     <p class="muted">{tr(st.session_state.study_level)} · {tr(st.session_state.study_style)}</p>
-    """)
+    """
+    )
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
-        html(f'<div class="metric"><div class="label">Daily study</div>'
-             f'<div class="value">{daily_hours}<span class="unit">hrs</span></div></div>')
+        html(
+            f'<div class="metric"><div class="label">Daily study</div>'
+            f'<div class="value">{daily_hours}<span class="unit">hrs</span></div></div>'
+        )
     with m2:
-        html(f'<div class="metric"><div class="label">Planning window</div>'
-             f'<div class="value">{exam_days}<span class="unit">days</span></div></div>')
+        html(
+            f'<div class="metric"><div class="label">Planning window</div>'
+            f'<div class="value">{exam_days}<span class="unit">days</span></div></div>'
+        )
     with m3:
-        html(f'<div class="metric"><div class="label">Total hours</div>'
-             f'<div class="value">{total_hours}<span class="unit">hrs</span></div></div>')
+        html(
+            f'<div class="metric"><div class="label">Total hours</div>'
+            f'<div class="value">{total_hours}<span class="unit">hrs</span></div></div>'
+        )
     with m4:
-        html(f'<div class="metric"><div class="label">Stress estimate</div>'
-             f'<div class="value" style="color:{color}">{stress_score}'
-             f'<span class="unit">/ 10 · {level}</span></div></div>')
+        html(
+            f'<div class="metric"><div class="label">Stress estimate</div>'
+            f'<div class="value" style="color:{color}">{stress_score}'
+            f'<span class="unit">/ 10 · {level}</span></div></div>'
+        )
+
+    # ---- Warnings & Recommendations ----
+    total_needed_hours = sum(s["Total Required Hours"] for s in subjects_data)
+    if total_needed_hours > total_hours:
+        st.warning(
+            f"⚠️ **تنبيه هام:** إجمالي ساعات المنهج المطلوبة ({total_needed_hours} ساعة) أكبر من إجمالي الساعات المتاحة في خطتك ({total_hours} ساعة). ننصح بزيادة ساعات المذاكرة اليومية أو تمديد فترة التخطيط لضمان إنهاء المنهج!"
+        )
+    else:
+        st.success(
+            "✅ الوقت المتاح كافٍ تمامًا لإنهاء المناهج ومراجعتها قبل الامتحانات بناءً على معدلك اليومي."
+        )
 
     # ---- Allocation table ----
     html('<div class="section-title">Study hours allocation</div>')
 
     df = pd.DataFrame(subjects_data)
-    display_df = df[["Subject", "Difficulty", "Priority", "Daily Hours", "Total Planned Hours"]].copy()
-    display_df["Daily Hours"] = display_df["Daily Hours"].round(2)
-    display_df["Total Planned Hours"] = display_df["Total Planned Hours"].round(2)
+    display_df = df[
+        [
+            "Subject",
+            "Exam Date",
+            "Remaining Chapters",
+            "Difficulty",
+            "Priority",
+            "Student Level",
+            "Total Required Hours",
+        ]
+    ].copy()
+    display_df["Total Required Hours"] = display_df[
+        "Total Required Hours"
+    ].round(2)
 
     if st.session_state.language == "Arabic":
-        display_df["Difficulty"] = display_df["Difficulty"].map({
-            "Easy": "سهلة", "Medium": "متوسطة", "Hard": "صعبة"
-        })
-        display_df["Priority"] = display_df["Priority"].map({
-            "Normal": "عادية", "Important": "مهمة", "Very important": "مهمة جدًا"
-        })
-        display_df = display_df.rename(columns={
-            "Subject": "المادة", "Difficulty": "الصعوبة", "Priority": "الأولوية",
-            "Daily Hours": "ساعات يوميًا", "Total Planned Hours": "إجمالي الساعات"
-        })
+        display_df["Difficulty"] = display_df["Difficulty"].map(
+            {"Easy": "سهلة", "Medium": "متوسطة", "Hard": "صعبة"}
+        )
+        display_df["Priority"] = display_df["Priority"].map(
+            {
+                "Normal": "عادية",
+                "Important": "مهمة",
+                "Very important": "مهمة جدًا",
+            }
+        )
+        display_df["Student Level"] = display_df["Student Level"].map(
+            {"Good": "جيد", "Average": "متوسط", "Weak": "ضعيف"}
+        )
+        display_df = display_df.rename(
+            columns={
+                "Subject": "المادة",
+                "Exam Date": "تاريخ الامتحان",
+                "Remaining Chapters": "الفصول المتبقية",
+                "Difficulty": "الصعوبة",
+                "Priority": "الأولوية",
+                "Student Level": "المستوى",
+                "Total Required Hours": "الساعات المطلوبة للمنهج",
+            }
+        )
     st.dataframe(display_df, hide_index=True)
+
+    # ---- Real Daily Schedule Generator (Today & Tomorrow & Days) ----
+    html(
+        '<div class="section-title">جدول المذاكرة اليومي الفعلي (ماذا تذاكر اليوم وغدًا؟)</div>'
+    )
+
+    rest_days = st.session_state.get("rest_days", [])
+    today = date.today()
+    schedule_rows = []
+
+    # Sort subjects by exam date and priority weight
+    sorted_subjects = sorted(
+        subjects_data,
+        key=lambda x: (
+            x["Exam Date"],
+            -x["Weight"],
+        ),
+    )
+
+    current_day = today
+    day_names_en = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ]
+
+    for day_offset in range(min(exam_days, 14)):
+        target_day = today + timedelta(days=day_offset)
+        day_name_str = day_names_en[target_day.weekday()]
+
+        if day_name_str in rest_days:
+            schedule_rows.append(
+                {
+                    "التاريخ": target_day.strftime("%Y-%m-%d"),
+                    "اليوم": day_name_str,
+                    "المادة": "راحة واسترخاء (يوم راحة محدد)",
+                    "الفصل / المهمة": "استراحة لتجديد النشاط",
+                    "عدد الساعات": 0,
+                }
+            )
+            continue
+
+        # Allocate daily hours to remaining chapters of subjects
+        hours_left_today = daily_hours
+        for sub in sorted_subjects:
+            if target_day >= sub["Exam Date"]:
+                continue  # Skip after exam date
+            if sub["Remaining Chapters"] > 0 and hours_left_today > 0:
+                # Assign task
+                allocated_hrs = min(
+                    hours_left_today,
+                    max(1.5, sub["Hours Per Chapter"]),
+                    sub["Remaining Chapters"] * sub["Hours Per Chapter"],
+                )
+                chapters_to_cover = max(
+                    1, round(allocated_hrs / sub["Hours Per Chapter"], 1)
+                )
+
+                schedule_rows.append(
+                    {
+                        "التاريخ": target_day.strftime("%Y-%m-%d"),
+                        "اليوم": day_name_str,
+                        "المادة": sub["Subject"],
+                        "الفصل / المهمة": f"مذاكرة حوالي {chapters_to_cover} فصل/محاضرة",
+                        "عدد الساعات": round(allocated_hrs, 1),
+                    }
+                )
+                hours_left_today -= allocated_hrs
+                sub["Remaining Chapters"] = max(
+                    0, sub["Remaining Chapters"] - chapters_to_cover
+                )
+
+    sched_df = pd.DataFrame(schedule_rows)
+    if not sched_df.empty:
+        if st.session_state.language == "Arabic":
+            # Translate day names if Arabic selected
+            day_map = {
+                "Monday": "الإثنين",
+                "Tuesday": "الثلاثاء",
+                "Wednesday": "الأربعاء",
+                "Thursday": "الخميس",
+                "Friday": "الجمعة",
+                "Saturday": "السبت",
+                "Sunday": "الأحد",
+            }
+            sched_df["اليوم"] = sched_df["اليوم"].map(day_map)
+        st.dataframe(sched_df, hide_index=True)
+    else:
+        st.info("لا توجد مهام مجولة كافية ضمن النطاق الزمني المحدد.")
 
     # ---- Chart ----
     html('<div class="section-title">Daily study distribution</div>')
 
-    chart_df = df[["Subject", "Daily Hours"]].copy().sort_values("Daily Hours", ascending=True)
+    chart_df = (
+        df[["Subject", "Daily Hours"]]
+        .copy()
+        .sort_values("Daily Hours", ascending=True)
+    )
 
-    fig, ax = plt.subplots(figsize=(10, max(2.4, 0.55 * len(chart_df) + 1)))
-    fig.patch.set_facecolor("#f4f6fb" if st.session_state.theme_mode == "Light" else "#0b0f19")
-    ax.set_facecolor("#f4f6fb" if st.session_state.theme_mode == "Light" else "#0b0f19")
+    fig, ax = plt.subplots(
+        figsize=(10, max(2.4, 0.55 * len(chart_df) + 1))
+    )
+    fig.patch.set_facecolor(
+        "#f4f6fb" if st.session_state.theme_mode == "Light" else "#0b0f19"
+    )
+    ax.set_facecolor(
+        "#f4f6fb" if st.session_state.theme_mode == "Light" else "#0b0f19"
+    )
 
-    bars = ax.barh(chart_df["Subject"], chart_df["Daily Hours"], color=ACCENT, height=0.55)
+    bars = ax.barh(
+        chart_df["Subject"], chart_df["Daily Hours"], color=ACCENT, height=0.55
+    )
 
-    ax.set_xlabel(tr("Hours per day"), color=("#475569" if st.session_state.theme_mode == "Light" else "#94a3b8"), fontsize=10)
-    ax.tick_params(axis="x", colors=("#475569" if st.session_state.theme_mode == "Light" else "#94a3b8"), labelsize=9)
-    ax.tick_params(axis="y", colors=("#172033" if st.session_state.theme_mode == "Light" else "#e5e7eb"), labelsize=10, length=0)
+    ax.set_xlabel(
+        tr("Hours per day"),
+        color=(
+            "#475569" if st.session_state.theme_mode == "Light" else "#94a3b8"
+        ),
+        fontsize=10,
+    )
+    ax.tick_params(
+        axis="x",
+        colors=(
+            "#475569" if st.session_state.theme_mode == "Light" else "#94a3b8"
+        ),
+        labelsize=9,
+    )
+    ax.tick_params(
+        axis="y",
+        colors=(
+            "#172033" if st.session_state.theme_mode == "Light" else "#e5e7eb"
+        ),
+        labelsize=10,
+        length=0,
+    )
     for spine in ("top", "right", "left"):
         ax.spines[spine].set_visible(False)
-    ax.spines["bottom"].set_color("#d8deea" if st.session_state.theme_mode == "Light" else "#1f2937")
-    ax.grid(axis="x", color="#d8deea" if st.session_state.theme_mode == "Light" else "#1f2937", linewidth=0.8)
+    ax.spines["bottom"].set_color(
+        "#d8deea" if st.session_state.theme_mode == "Light" else "#1f2937"
+    )
+    ax.grid(
+        axis="x",
+        color=(
+            "#d8deea" if st.session_state.theme_mode == "Light" else "#1f2937"
+        ),
+        linewidth=0.8,
+    )
     ax.set_axisbelow(True)
     ax.set_xlim(0, chart_df["Daily Hours"].max() * 1.18)
 
@@ -768,7 +1131,11 @@ elif current_step == 3:
             bar.get_y() + bar.get_height() / 2,
             f"{bar.get_width():.1f} h",
             va="center",
-            color=("#172033" if st.session_state.theme_mode == "Light" else "#e5e7eb"),
+            color=(
+                "#172033"
+                if st.session_state.theme_mode == "Light"
+                else "#e5e7eb"
+            ),
             fontsize=10,
         )
 
@@ -776,126 +1143,56 @@ elif current_step == 3:
     st.pyplot(fig)
     plt.close(fig)
 
-    # ---- Timetable ----
-    html('<div class="section-title">Suggested daily timetable</div>')
-
-    ordered = sorted(subjects_data, key=lambda x: x["Weight"], reverse=True)
-
-    def format_time(hour_value):
-        total_minutes = round(hour_value * 60)
-        hour = (total_minutes // 60) % 24
-        minute = total_minutes % 60
-        suffix = "AM" if hour < 12 else "PM"
-        return f"{hour % 12 or 12}:{minute:02d} {suffix}"
-
-    timetable = []
-    current_time = 9.0
-
-    for i, s in enumerate(ordered):
-        duration = s["Daily Hours"]
-        end_time = current_time + duration
-
-        timetable.append({
-            "Time": f"{format_time(current_time)} - {format_time(end_time)}",
-            "Activity": f"{tr('Study: ')}{s['Subject']}",
-            "Duration": f"{duration:.1f} {tr('hours')}",
-        })
-        current_time = end_time
-
-        if i < len(ordered) - 1:
-            timetable.append({
-                "Time": f"{format_time(current_time)} - {format_time(current_time + 0.25)}",
-                "Activity": tr("Short break"),
-                "Duration": f"15 {tr('minutes')}",
-            })
-            current_time += 0.25
-
-            if (i + 1) % 2 == 0 and i < len(ordered) - 2:
-                timetable.append({
-                    "Time": f"{format_time(current_time)} - {format_time(current_time + 0.5)}",
-                    "Activity": tr("Long break / meal"),
-                    "Duration": f"30 {tr('minutes')}",
-                })
-                current_time += 0.5
-
-    timetable_df = pd.DataFrame(timetable)
-    if st.session_state.language == "Arabic":
-        # الأول نترجم محتوى عمود Activity وهو لسه اسمه "Activity"
-        timetable_df["Activity"] = timetable_df["Activity"].map(
-            lambda x: x.replace("Study: ", "مذاكرة: ").replace("Short break", "استراحة قصيرة").replace("Long break / meal", "استراحة طويلة / وجبة")
-        )
-        # وبعد كده نغير أسماء الأعمدة
-        timetable_df = timetable_df.rename(columns={
-            "Time": "الوقت", "Activity": "النشاط", "Duration": "المدة"
-        })
-    st.dataframe(timetable_df, hide_index=True)
-
-    if current_time > 22:
-        st.warning(
-            tr("This timetable runs late into the evening. Consider reducing your daily hours or starting earlier to protect your sleep.")
-        )
-
-    # ---- Tips ----
+    # ---- Recommendations & Stress Tips ----
     html('<div class="section-title">Stress management tips</div>')
+    tips = [
+        "Keep your study routine consistent and balanced.",
+        "Review your notes regularly instead of cramming.",
+        "Protect your sleep schedule and take regular breaks.",
+        "Break large tasks into smaller, manageable steps.",
+        "Try 25 minutes of focused work followed by a 5-minute break.",
+    ]
+    for idx, t in enumerate(tips, 1):
+        html(
+            f'<div class="tip"><div class="num">{idx:02d}</div><div>{tr(t)}</div></div>'
+        )
 
-    if stress_score <= 3:
-        tips = [
-            "Keep your study routine consistent and balanced.",
-            "Review your notes regularly instead of cramming.",
-            "Protect your sleep schedule and take regular breaks.",
-        ]
-    elif stress_score <= 6:
-        tips = [
-            "Break large tasks into smaller, manageable steps.",
-            "Try 25 minutes of focused work followed by a 5-minute break.",
-            "Start with the most important task and leave room for flexibility.",
-        ]
-    else:
-        tips = [
-            "Focus on urgent tasks first and postpone non-essential work.",
-            "Use short study sessions with frequent breaks.",
-            "Make time for meals, rest, hydration, and sleep.",
-            "Consider talking with someone you trust or your student support team.",
-        ]
+    html(
+        f'<div class="note">{tr("This tool offers study-planning suggestions, not medical advice or a clinical stress diagnosis.")}</div>'
+    )
 
-    for n, tip in enumerate(tips, start=1):
-        html(f'<div class="tip"><span class="num">{n:02d}</span><span>{tip}</span></div>')
-
-    st.caption(tr("This tool offers study-planning suggestions, not medical advice or a clinical stress diagnosis."))
-
-    # ---- Downloads ----
-    html('<div class="section-title">Export</div>')
-
-    d1, d2 = st.columns(2)
-    with d1:
+    # ---- Export Button ----
+    col_dl1, col_dl2 = st.columns(2)
+    with col_dl1:
+        csv_data = df.to_csv(index=False).encode("utf-8")
         st.download_button(
-            tr("Download study plan"),
-            data=display_df.to_csv(index=False).encode("utf-8-sig"),
+            label=tr("Download study plan"),
+            data=csv_data,
             file_name="study_plan.csv",
             mime="text/csv",
         )
-    with d2:
-        st.download_button(
-            tr("Download timetable"),
-            data=timetable_df.to_csv(index=False).encode("utf-8-sig"),
-            file_name="daily_timetable.csv",
-            mime="text/csv",
-        )
+    with col_dl2:
+        if not sched_df.empty:
+            sched_csv = sched_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label=tr("Download timetable"),
+                data=sched_csv,
+                file_name="daily_timetable.csv",
+                mime="text/csv",
+            )
 
     st.markdown("---")
-
-    back_col, restart_col = st.columns(2)
-    with back_col:
+    c_back, c_restart = st.columns(2)
+    with c_back:
         if st.button(tr("Back to planning"), key="results_back"):
-            go_back()
+            st.session_state.step = 2
             st.rerun()
-    with restart_col:
-        if st.button(tr("Start over"), key="restart", type="primary"):
-            st.session_state.clear()
+    with c_restart:
+        if st.button(tr("Start over"), key="results_restart"):
+            st.session_state.step = 0
+            st.session_state.subjects_data = []
             st.rerun()
 
-# ==================================================
-# FOOTER
-# ==================================================
-st.markdown("---")
-html('<div class="footer">ACADEMIC &amp; STRESS MANAGEMENT EXPERT SYSTEM</div>')
+html(
+    '<div class="footer">ACADEMIC &amp; STRESS MANAGEMENT EXPERT SYSTEM</div>'
+)
