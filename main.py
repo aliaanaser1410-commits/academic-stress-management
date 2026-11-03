@@ -58,7 +58,10 @@ defaults = {
     "rest_days": [],
     "xp_points": 0,
     "daily_logs": [],
-    "quick_tasks": [],  # قائمة المهام السريعة
+    "quick_tasks": [],
+    "chat_history": [
+        {"role": "assistant", "content": "أهلاً بك! أنا مساعدك الدراسي الذكي. كيف يمكنني مساعدتك في المذاكرة اليوم؟ 🎓"}
+    ],
 }
 
 for key, value in defaults.items():
@@ -143,6 +146,20 @@ def get_student_rank(xp):
         return "🦉 بطل الدراسة (Study Champion)"
     else:
         return "🦅 أستاذ المذاكرة (Study Master)"
+
+
+def get_smart_bot_response(user_input):
+    text = user_input.lower()
+    if any(w in text for w in ["متوتر", "خائف", "ضغط", "قلق", "stress"]):
+        return "خذ نفساً عميقاً! التوتر أمر طبيعي قبل الامتحانات. أنصحك باستراحة لمدة 10 دقائق واستخدام مؤقت البومودورو المتاح في القائمة الجانبية لت تقسيم وقتك لـ 25 دقيقة تركيز فقط."
+    elif any(w in text for w in ["تعبان", "محتار", "أبدأ إزاي", "صعب", "مستصعب"]):
+        return "عندما تستصعب مادة، ابدأ بأسهل جزء فيها لمدة 15 دقيقة فقط لبناء الزخم (Momentum). الخطة الموضوعة لك في التطبيق توازن تلقائياً بين المواد الصعبة والسهلة."
+    elif any(w in text for w in ["الوقت ضيق", "امتحان", "الامتحان", "الوقت"]):
+        return "التركيز على الجودة أهم من الكمية! ركز على الفصول ذات الأولوية العالية والمواد الصعبة أولاً بناءً على الجدول المحدد لك في خطتك الدراسية."
+    elif any(w in text for w in ["شكراً", "شكرا", "تسلم", "حلو"]):
+        return "العفو! أنا دائماً هنا لمساعدتك. استمري في الإنجاز وجمع نقاط الـ XP! 🌟"
+    else:
+        return f"سؤال ممتاز! للحصول على أفضل نتيجة، أنصحك بالالتزام بالجدول اليومي المقترح، وتدوين يومياتك في قسم 'يوميّة المتابعة'، مع أخذ فترات راحة منتظمة. هل تريد الاستفسار عن شيء آخر حول الدراسة؟"
 
 
 TRANSLATIONS = {
@@ -463,9 +480,22 @@ hr { border-color: var(--border); margin: 1.6rem 0; }
 )
 
 # ==================================================
-# 5. SIDEBAR: POMODORO, XP & QUICK TASKS
+# 5. SIDEBAR: CHATBOT, POMODORO, XP & QUICK TASKS
 # ==================================================
 with st.sidebar:
+    st.markdown("### 🤖 المساعد الدراسي الذكي (AI Bot)")
+    with st.expander("💬 دردش مع المساعد", expanded=False):
+        for msg in st.session_state.chat_history:
+            st.chat_message(msg["role"]).write(msg["content"])
+        
+        user_msg = st.chat_input("اسأل المساعد نصيحة...")
+        if user_msg:
+            st.session_state.chat_history.append({"role": "user", "content": user_msg})
+            bot_ans = get_smart_bot_response(user_msg)
+            st.session_state.chat_history.append({"role": "assistant", "content": bot_ans})
+            st.rerun()
+
+    st.markdown("---")
     st.markdown("### 🏆 لوحة إنجاز الطالب (XP)")
     current_xp = st.session_state.get("xp_points", 0)
     current_rank = get_student_rank(current_xp)
@@ -473,7 +503,7 @@ with st.sidebar:
     st.markdown(f"**المستوى الدراسي:** {current_rank}")
     st.markdown("---")
 
-    # NEW FEATURE: QUICK TASKS (قائمة المهام السريعة)
+    # QUICK TASKS (قائمة المهام السريعة)
     st.markdown("### ✅ قائمة المهام السريعة")
     new_task = st.text_input("أضف مهمة سريعة جديدة:", placeholder="مثال: تسليم البحث...")
     if st.button("➕ إضافة مهمة"):
@@ -504,7 +534,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # NEW FEATURE: MOTIVATIONAL TIPS SECTION (قسم النصائح والإلهام)
+    # MOTIVATIONAL TIPS SECTION (قسم النصائح والإلهام)
     st.markdown("### 💡 حصن الإلهام والنصائح")
     if "current_tip" not in st.session_state:
         st.session_state.current_tip = random.choice(MOTIVATIONAL_TIPS)
