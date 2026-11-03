@@ -151,15 +151,15 @@ def get_student_rank(xp):
 def get_smart_bot_response(user_input):
     text = user_input.lower()
     if any(w in text for w in ["متوتر", "خائف", "ضغط", "قلق", "stress"]):
-        return "خذ نفساً عميقاً! التوتر أمر طبيعي قبل الامتحانات. أنصحك باستراحة لمدة 10 دقائق واستخدام مؤقت البومودورو المتاح في القائمة الجانبية لت تقسيم وقتك لـ 25 دقيقة تركيز فقط."
+        return "خذ نفساً عميقاً! التوتر أمر طبيعي قبل الامتحانات. أنصحك باستراحة لمدة 10 دقائق واستخدام مؤقت البومودورو المتاح في القائمة الجانبية لتوزيع وقتك."
     elif any(w in text for w in ["تعبان", "محتار", "أبدأ إزاي", "صعب", "مستصعب"]):
-        return "عندما تستصعب مادة، ابدأ بأسهل جزء فيها لمدة 15 دقيقة فقط لبناء الزخم (Momentum). الخطة الموضوعة لك في التطبيق توازن تلقائياً بين المواد الصعبة والسهلة."
+        return "عندما تستصعب مادة، ابدأ بأسهل جزء فيها لمدة 15 دقيقة فقط لبناء الزخم. الخطة الموضوعة لك في التطبيق توازن تلقائياً."
     elif any(w in text for w in ["الوقت ضيق", "امتحان", "الامتحان", "الوقت"]):
-        return "التركيز على الجودة أهم من الكمية! ركز على الفصول ذات الأولوية العالية والمواد الصعبة أولاً بناءً على الجدول المحدد لك في خطتك الدراسية."
+        return "التركيز على الجودة أهم من الكمية! ركز على الفصول ذات الأولوية العالية والمواد الصعبة أولاً بناءً على الجدول المحدد لك."
     elif any(w in text for w in ["شكراً", "شكرا", "تسلم", "حلو"]):
         return "العفو! أنا دائماً هنا لمساعدتك. استمري في الإنجاز وجمع نقاط الـ XP! 🌟"
     else:
-        return f"سؤال ممتاز! للحصول على أفضل نتيجة، أنصحك بالالتزام بالجدول اليومي المقترح، وتدوين يومياتك في قسم 'يوميّة المتابعة'، مع أخذ فترات راحة منتظمة. هل تريد الاستفسار عن شيء آخر حول الدراسة؟"
+        return "سؤال ممتاز! للحصول على أفضل نتيجة، أنصحك بالالتزام بالجدول اليومي المقترح وتدوين يومياتك. هل تريد الاستفسار عن شيء آخر؟"
 
 
 TRANSLATIONS = {
@@ -297,14 +297,16 @@ def html(markup):
 
 
 # ==================================================
-# 3. DESIGN SYSTEM
+# 3. DESIGN SYSTEM & DYNAMIC DIRECTION FIX
 # ==================================================
+is_arabic = st.session_state.get("language", "English") == "Arabic"
+
 st.markdown(
-    """
+    f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-:root {
+:root {{
     --bg: #0b0f19;
     --surface: #111726;
     --surface-2: #0d1320;
@@ -315,83 +317,84 @@ st.markdown(
     --faint: #64748b;
     --accent: #6366f1;
     --accent-hover: #4f46e5;
-}
+}}
 
-html, body, .stApp, [class*="css"] {
+html, body, .stApp, [class*="css"] {{
     font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-}
+    direction: {"rtl" if is_arabic else "ltr"};
+}}
 
-.stApp { background: var(--bg); color: var(--text); }
-[data-testid="stHeader"] { background: transparent; }
-[data-testid="stToolbar"], #MainMenu, footer { visibility: hidden; }
+.stApp {{ background: var(--bg); color: var(--text); }}
+[data-testid="stHeader"] {{ background: transparent; }}
+[data-testid="stToolbar"], #MainMenu, footer {{ visibility: hidden; }}
 
-.block-container {
+.block-container {{
     max-width: 1040px;
     padding-top: 2.5rem;
     padding-bottom: 3rem;
-}
+    text-align: {"right" if is_arabic else "left"};
+}}
 
-h1, h2, h3, h4, p, label, span { color: var(--text); }
+h1, h2, h3, h4, p, label, span {{ color: var(--text); text-align: {"right" if is_arabic else "left"}; }}
 
-.app-header { padding-bottom: 22px; border-bottom: 1px solid var(--border); margin-bottom: 26px; }
-.app-eyebrow { color: var(--accent); font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
-.app-title { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; margin: 8px 0 6px; color: #f8fafc; }
-.app-sub { color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 640px; }
+.app-header {{ padding-bottom: 22px; border-bottom: 1px solid var(--border); margin-bottom: 26px; text-align: {"right" if is_arabic else "left"}; }}
+.app-eyebrow {{ color: var(--accent); font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }}
+.app-title {{ font-size: 32px; font-weight: 700; letter-spacing: -0.02em; margin: 8px 0 6px; color: #f8fafc; }}
+.app-sub {{ color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 640px; }}
 
-.stepper { display: flex; align-items: center; margin-bottom: 26px; }
-.step { display: flex; align-items: center; gap: 10px; }
-.step .dot {
+.stepper {{ display: flex; align-items: center; margin-bottom: 26px; direction: {"rtl" if is_arabic else "ltr"}; }}
+.step {{ display: flex; align-items: center; gap: 10px; }}
+.step .dot {{
     width: 28px; height: 28px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
     font-size: 12px; font-weight: 600;
     border: 1px solid var(--border-strong); color: var(--faint); background: transparent;
-}
-.step .name { font-size: 13px; font-weight: 500; color: var(--faint); white-space: nowrap; }
-.step.done .dot { background: var(--accent); border-color: var(--accent); color: #fff; }
-.step.done .name { color: var(--muted); }
-.step.current .dot { border-color: var(--accent); color: #fff; box-shadow: 0 0 0 4px rgba(99,102,241,0.18); }
-.step.current .name { color: #f8fafc; font-weight: 600; }
-.step-line { flex: 1; height: 1px; background: var(--border-strong); margin: 0 14px; min-width: 18px; }
-.step-line.done { background: var(--accent); }
-@media (max-width: 720px) { .step:not(.current) .name { display: none; } }
+}}
+.step .name {{ font-size: 13px; font-weight: 500; color: var(--faint); white-space: nowrap; }}
+.step.done .dot {{ background: var(--accent); border-color: var(--accent); color: #fff; }}
+.step.done .name {{ color: var(--muted); }}
+.step.current .dot {{ border-color: var(--accent); color: #fff; box-shadow: 0 0 0 4px rgba(99,102,241,0.18); }}
+.step.current .name {{ color: #f8fafc; font-weight: 600; }}
+.step-line {{ flex: 1; height: 1px; background: var(--border-strong); margin: 0 14px; min-width: 18px; }}
+.step-line.done {{ background: var(--accent); }}
 
-.st-key-slide_card {
+.st-key-slide_card {{
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 16px;
     padding: 32px;
     margin: 4px 0 20px;
-}
-.card-eyebrow { color: var(--faint); font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; }
-.card-title { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; margin: 6px 0 6px; color: #f8fafc; }
-.muted { color: var(--muted); font-size: 14px; line-height: 1.7; }
+}}
+.card-eyebrow {{ color: var(--faint); font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; }}
+.card-title {{ font-size: 24px; font-weight: 700; letter-spacing: -0.01em; margin: 6px 0 6px; color: #f8fafc; }}
+.muted {{ color: var(--muted); font-size: 14px; line-height: 1.7; }}
 
-.metric {
+.metric {{
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 14px;
     padding: 18px 20px;
     height: 100%;
-}
-.metric .label { color: var(--faint); font-size: 12px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; }
-.metric .value { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin-top: 8px; color: #f8fafc; }
-.metric .unit { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+}}
+.metric .label {{ color: var(--faint); font-size: 12px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; }}
+.metric .value {{ font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin-top: 8px; color: #f8fafc; }}
+.metric .unit {{ font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 4px; }}
 
-.estimate {
+.estimate {{
     background: var(--surface-2);
     border: 1px solid var(--border);
     border-radius: 14px;
     padding: 20px 22px;
     margin-top: 18px;
-}
-.estimate .row { display: flex; align-items: baseline; justify-content: space-between; }
-.estimate .score { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
-.estimate .score small { font-size: 15px; color: var(--faint); font-weight: 500; }
-.estimate .badge { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; border: 1px solid; }
-.bar { height: 6px; background: var(--border); border-radius: 999px; margin: 14px 0 12px; overflow: hidden; }
-.bar > div { height: 100%; border-radius: 999px; }
+}}
+.estimate .row {{ display: flex; align-items: baseline; justify-content: space-between; }}
+.estimate .score {{ font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }}
+.estimate .score small {{ font-size: 15px; color: var(--faint); font-weight: 500; }}
+.estimate .badge {{ font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; border: 1px solid; }}
+.bar {{ height: 6px; background: var(--border); border-radius: 999px; margin: 14px 0 12px; overflow: hidden; }}
+.bar > div {{ height: 100%; border-radius: 999px; }}
 
-.note {
+.note {{
     background: var(--surface-2);
     border: 1px solid var(--border);
     border-radius: 12px;
@@ -400,10 +403,10 @@ h1, h2, h3, h4, p, label, span { color: var(--text); }
     color: var(--muted);
     font-size: 14px;
     line-height: 1.65;
-}
-.note b { color: var(--text); font-weight: 600; }
+}}
+.note b {{ color: var(--text); font-weight: 600; }}
 
-.tip {
+.tip {{
     display: flex; gap: 16px; align-items: flex-start;
     background: var(--surface);
     border: 1px solid var(--border);
@@ -411,76 +414,76 @@ h1, h2, h3, h4, p, label, span { color: var(--text); }
     padding: 14px 18px;
     margin: 10px 0;
     font-size: 14px; line-height: 1.65; color: var(--text);
-}
-.tip .num { color: var(--accent); font-weight: 700; font-size: 13px; min-width: 22px; padding-top: 1px; }
+}}
+.tip .num {{ color: var(--accent); font-weight: 700; font-size: 13px; min-width: 22px; padding-top: 1px; }}
 
-.section-title { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; margin: 34px 0 12px; color: #f8fafc; }
-.subject-label { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; margin-bottom: 4px; }
+.section-title {{ font-size: 18px; font-weight: 600; letter-spacing: -0.01em; margin: 34px 0 12px; color: #f8fafc; }}
+.subject-label {{ font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; margin-bottom: 4px; }}
 
-div[data-baseweb="input"], div[data-baseweb="select"] > div, div[data-baseweb="textarea"] {
+div[data-baseweb="input"], div[data-baseweb="select"] > div, div[data-baseweb="textarea"] {{
     background-color: var(--surface-2) !important;
     border-color: var(--border-strong) !important;
     border-radius: 10px !important;
-}
-div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea { color: #f8fafc !important; }
-[data-testid="stWidgetLabel"] p { font-size: 13px; font-weight: 500; color: var(--muted); }
+}}
+div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea {{ color: #f8fafc !important; }}
+[data-testid="stWidgetLabel"] p {{ font-size: 13px; font-weight: 500; color: var(--muted); }}
 
-[data-testid="stVerticalBlockBorderWrapper"] {
+[data-testid="stVerticalBlockBorderWrapper"] {{
     border-color: var(--border) !important;
     background: var(--surface-2);
     border-radius: 14px !important;
-}
+}}
 
-.stButton > button, .stDownloadButton > button {
+.stButton > button, .stDownloadButton > button {{
     width: 100%;
     min-height: 44px;
     border-radius: 10px;
     font-weight: 600;
     font-size: 14px;
     transition: background 0.15s ease, border-color 0.15s ease;
-}
+}}
 .stButton > button[kind="primary"],
-.stButton > button[data-testid="stBaseButton-primary"] {
+.stButton > button[data-testid="stBaseButton-primary"] {{
     background: var(--accent);
     border: 1px solid var(--accent);
     color: #ffffff;
-}
+}}
 .stButton > button[kind="primary"]:hover,
-.stButton > button[data-testid="stBaseButton-primary"]:hover {
+.stButton > button[data-testid="stBaseButton-primary"]:hover {{
     background: var(--accent-hover);
     border-color: var(--accent-hover);
     color: #ffffff;
-}
+}}
 .stButton > button[kind="secondary"],
 .stButton > button[data-testid="stBaseButton-secondary"],
-.stDownloadButton > button {
+.stDownloadButton > button {{
     background: transparent;
     border: 1px solid var(--border-strong);
     color: var(--text);
-}
+}}
 .stButton > button[kind="secondary"]:hover,
 .stButton > button[data-testid="stBaseButton-secondary"]:hover,
-.stDownloadButton > button:hover {
+.stDownloadButton > button:hover {{
     background: var(--surface);
     border-color: var(--accent);
     color: #ffffff;
-}
+}}
 
-[data-testid="stDataFrame"] {
+[data-testid="stDataFrame"] {{
     border: 1px solid var(--border);
     border-radius: 12px;
     overflow: hidden;
-}
+}}
 
-hr { border-color: var(--border); margin: 1.6rem 0; }
-.footer { text-align: center; color: var(--faint); font-size: 12px; letter-spacing: 0.08em; padding-top: 8px; }
+hr {{ border-color: var(--border); margin: 1.6rem 0; }}
+.footer {{ text-align: center; color: var(--faint); font-size: 12px; letter-spacing: 0.08em; padding-top: 8px; }}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 # ==================================================
-# 5. SIDEBAR: CHATBOT, POMODORO, XP & QUICK TASKS
+# 4. SIDEBAR: CHATBOT, POMODORO, XP & QUICK TASKS
 # ==================================================
 with st.sidebar:
     st.markdown("### 🤖 المساعد الدراسي الذكي (AI Bot)")
@@ -595,34 +598,21 @@ with st.sidebar:
 
     st.markdown("---")
 
-# Toolbar controls
-toolbar_left, toolbar_right = st.columns([1, 1])
-with toolbar_left:
-    lang_label = (
-        "🌐 العربية" if st.session_state.language == "English" else "🌐 English"
-    )
-    if st.button(
-        lang_label, key="toggle_language", help="Switch interface language"
-    ):
-        st.session_state.language = (
-            "Arabic" if st.session_state.language == "English" else "English"
-        )
+# ==================================================
+# 5. FIXED NAVBAR & CONTROLS (أزرار اللغة والثيم فقط)
+# ==================================================
+nav_col1, nav_col2 = st.columns([1, 1])
+
+with nav_col1:
+    lang_label = "🌐 العربية" if st.session_state.language == "English" else "🌐 English"
+    if st.button(lang_label, key="toggle_language", help="Switch interface language"):
+        st.session_state.language = "Arabic" if st.session_state.language == "English" else "English"
         st.rerun()
 
-with toolbar_right:
-    theme_label = (
-        "☀️ Light theme"
-        if st.session_state.theme_mode == "Dark"
-        else "🌙 Dark theme"
-    )
-    if st.button(
-        tr(theme_label),
-        key="toggle_theme",
-        help="Switch between dark and light themes",
-    ):
-        st.session_state.theme_mode = (
-            "Light" if st.session_state.theme_mode == "Dark" else "Dark"
-        )
+with nav_col2:
+    theme_label = "☀️ Light theme" if st.session_state.theme_mode == "Dark" else "🌙 Dark theme"
+    if st.button(tr(theme_label), key="toggle_theme", help="Switch between dark and light themes"):
+        st.session_state.theme_mode = "Light" if st.session_state.theme_mode == "Dark" else "Dark"
         st.rerun()
 
 if st.session_state.theme_mode == "Light":
@@ -649,19 +639,6 @@ if st.session_state.theme_mode == "Light":
     div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea { color: #172033 !important; }
     .stButton > button[data-testid="stBaseButton-secondary"],
     .stDownloadButton > button { color: #172033 !important; }
-    </style>
-    """,
-        unsafe_allow_html=True,
-    )
-
-if st.session_state.language == "Arabic":
-    st.markdown(
-        """
-    <style>
-    .stApp { direction: rtl; }
-    .block-container { text-align: right; }
-    .app-header, .card-title, .card-eyebrow, .muted, .note, .tip { text-align: right; }
-    .stepper { direction: rtl; }
     </style>
     """,
         unsafe_allow_html=True,
@@ -1366,8 +1343,7 @@ elif current_step == 3:
             st.rerun()
     with c_restart:
         if st.button(tr("Start over"), key="results_restart"):
-            st.session_state.step = 0
-            st.session_state.subjects_data = []
+            st.session_state.step, st.session_state.subjects_data = 0, []
             st.rerun()
 
 html(
