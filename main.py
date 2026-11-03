@@ -32,6 +32,7 @@ except Exception:
 # ==================================================
 # 1. PAGE CONFIG
 # ==================================================
+# initial_sidebar_state="expanded" -> السايدبار يظهر مفتوحاً عند كل تشغيل
 st.set_page_config(
     page_title="Academic & Stress Management",
     layout="wide",
@@ -160,6 +161,52 @@ def get_smart_bot_response(user_input):
         return "العفو! أنا دائماً هنا لمساعدتك. استمري في الإنجاز وجمع نقاط الـ XP! 🌟"
     else:
         return "سؤال ممتاز! للحصول على أفضل نتيجة، أنصحك بالالتزام بالجدول اليومي المقترح وتدوين يومياتك. هل تريد الاستفسار عن شيء آخر؟"
+
+
+# --------------------------------------------------
+# [NEW] مؤقت البومودورو كـ fragment:
+# كان الكود القديم يستخدم time.sleep + st.rerun داخل السايدبار، وده كان بيوقف
+# رسم الصفحة الرئيسية طول ما المؤقت شغال. الـ fragment بيحدّث المؤقت فقط كل ثانية
+# من غير ما يعطّل باقي الصفحة (ويسمح بعرض المؤقت في السايدبار وفي الصفحة الرئيسية).
+# --------------------------------------------------
+def _render_pomodoro_clock(tick=False):
+    if tick and st.session_state.get("pomo_running", False):
+        if st.session_state.pomo_time_left > 0:
+            st.session_state.pomo_time_left -= 1
+        if st.session_state.pomo_time_left <= 0:
+            st.session_state.pomo_running = False
+            st.session_state.xp_points += 20
+            st.session_state.pomo_done = True
+            st.rerun()
+    _m, _s = divmod(st.session_state.get("pomo_time_left", 0), 60)
+    st.markdown(
+        f"<h1 style='text-align: center; color: #6366f1;'>{_m:02d}:{_s:02d}</h1>",
+        unsafe_allow_html=True,
+    )
+
+
+@st.fragment(run_every=1)
+def pomodoro_clock_ticking():
+    _render_pomodoro_clock(tick=True)
+
+
+@st.fragment(run_every=1)
+def pomodoro_clock_mirror():
+    _render_pomodoro_clock(tick=False)
+
+
+# --------------------------------------------------
+# [NEW] مزامنة المهام السريعة بين السايدبار واللوحة الرئيسية
+# --------------------------------------------------
+def _hub_toggle_task(idx):
+    new_val = st.session_state.get(f"hub_q_task_{idx}", False)
+    tasks = st.session_state.quick_tasks
+    if idx < len(tasks) and tasks[idx]["done"] != new_val:
+        tasks[idx]["done"] = new_val
+        st.session_state[f"q_task_{idx}"] = new_val
+        if new_val:
+            st.session_state.xp_points += 5
+            st.toast("🌟 أحسنت! تم إنجاز مهمة سريعة (+5 XP).")
 
 
 TRANSLATIONS = {
@@ -482,6 +529,37 @@ hr {{ border-color: var(--border); margin: 1.6rem 0; }}
     unsafe_allow_html=True,
 )
 
+# --------------------------------------------------
+# [NEW] إصلاح اختفاء زر السايدبار:
+# القاعدة القديمة بتخفي [data-testid="stToolbar"] وفي إصدارات Streamlit الأحدث
+# زر فتح/غلق السايدبار بيتحط جوّه الهيدر/التولبار فبيختفي معاه.
+# هنا بنجبر أزرار السايدبار تفضل ظاهرة.
+# --------------------------------------------------
+st.markdown(
+    """
+<style>
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapseButton"],
+[data-testid="collapsedControl"],
+[data-testid="stSidebarHeader"] button,
+[data-testid="stSidebarCollapsedControl"] button,
+[data-testid="stExpandSidebarButton"] button {
+    visibility: visible !important;
+    opacity: 1 !important;
+    z-index: 999999 !important;
+}
+[data-testid="stSidebarCollapsedControl"] button,
+[data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapseButton"] button,
+[data-testid="collapsedControl"] button {
+    color: #e5e7eb !important;
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
 # ==================================================
 # 4. SIDEBAR: CHATBOT, POMODORO, XP & QUICK TASKS
 # ==================================================
@@ -580,20 +658,9 @@ with st.sidebar:
         st.session_state.pomo_running = False
         st.session_state.pomo_time_left = default_secs
 
-    mins, secs = divmod(st.session_state.pomo_time_left, 60)
-    timer_placeholder = st.empty()
-    timer_placeholder.markdown(
-        f"<h1 style='text-align: center; color: #6366f1;'>{mins:02d}:{secs:02d}</h1>",
-        unsafe_allow_html=True,
-    )
-
-    if st.session_state.pomo_running and st.session_state.pomo_time_left > 0:
-        time.sleep(1)
-        st.session_state.pomo_time_left -= 1
-        st.rerun()
-    elif st.session_state.pomo_time_left == 0 and st.session_state.pomo_running:
-        st.session_state.pomo_running = False
-        st.session_state.xp_points += 20
+    # [CHANGED] كان هنا time.sleep(1) + st.rerun() بيوقف باقي الصفحة؛ اتبدل بـ fragment
+    pomodoro_clock_ticking()
+    if st.session_state.pop("pomo_done", False):
         st.success("🎉 انتهت الجلسة بنجاح! تم منحك +20 نقطة XP.")
 
     st.markdown("---")
@@ -671,6 +738,111 @@ for i, label in enumerate(STEPS):
         parts.append(f'<div class="step-line {line_state}"></div>')
 
 html(f'<div class="stepper">{"".join(parts)}</div>')
+
+# ==================================================
+# [NEW] 6.5 لوحة الأدوات في الصفحة الرئيسية (Tools Hub)
+# نفس أدوات السايدبار (XP · المساعد · البومودورو · المهام) ومربوطة بنفس الـ session_state،
+# فلو السايدبار اختفى في أي متصفح الأدوات تفضل متاحة قدّام لجنة التحكيم.
+# ==================================================
+st.session_state.setdefault("show_hub", True)
+
+hub_toggle_label = (
+    "🧰 إخفاء لوحة الأدوات"
+    if st.session_state.show_hub
+    else "🧰 إظهار لوحة الأدوات (XP · المساعد · بومودورو · المهام)"
+)
+if st.button(hub_toggle_label, key="toggle_hub"):
+    st.session_state.show_hub = not st.session_state.show_hub
+    st.rerun()
+
+if st.session_state.show_hub:
+    with st.container(border=True):
+        st.markdown("#### 🧰 لوحة الأدوات السريعة")
+        hub_tabs = st.tabs(
+            ["🏆 الإنجاز (XP)", "🤖 المساعد الذكي", "⏱️ البومودورو", "✅ المهام"]
+        )
+
+        # ---- XP ----
+        with hub_tabs[0]:
+            hub_xp = st.session_state.get("xp_points", 0)
+            hx1, hx2 = st.columns(2)
+            with hx1:
+                st.metric(label="نقاطك الحالية (XP)", value=hub_xp)
+            with hx2:
+                st.markdown(f"**المستوى الدراسي:** {get_student_rank(hub_xp)}")
+                next_goal = next((g for g in (50, 150, 300) if hub_xp < g), None)
+                if next_goal:
+                    st.progress(min(hub_xp / next_goal, 1.0))
+                    st.caption(f"باقي {next_goal - hub_xp} نقطة للمستوى التالي")
+                else:
+                    st.caption("وصلتِ لأعلى مستوى! 🦅")
+
+        # ---- Chat ----
+        with hub_tabs[1]:
+            chat_box = st.container(height=260)
+            with chat_box:
+                for msg in st.session_state.chat_history:
+                    st.chat_message(msg["role"]).write(msg["content"])
+            with st.form("hub_chat_form", clear_on_submit=True):
+                hub_msg = st.text_input(
+                    "اسأل المساعد نصيحة...", key="hub_chat_text"
+                )
+                hub_sent = st.form_submit_button("📨 إرسال")
+            if hub_sent and hub_msg.strip():
+                st.session_state.chat_history.append(
+                    {"role": "user", "content": hub_msg.strip()}
+                )
+                st.session_state.chat_history.append(
+                    {
+                        "role": "assistant",
+                        "content": get_smart_bot_response(hub_msg.strip()),
+                    }
+                )
+                st.rerun()
+
+        # ---- Pomodoro ----
+        with hub_tabs[2]:
+            st.caption("اختاري نوع الجلسة (تركيز / استراحة) من «وضع المؤقت» في القائمة الجانبية.")
+            pomodoro_clock_mirror()
+            hp1, hp2, hp3 = st.columns(3)
+            with hp1:
+                if st.button("▶️ ابدأ", key="hub_pomo_start"):
+                    st.session_state.pomo_running = True
+                    st.rerun()
+            with hp2:
+                if st.button("⏸️ إيقاف", key="hub_pomo_pause"):
+                    st.session_state.pomo_running = False
+                    st.rerun()
+            with hp3:
+                if st.button("🔄 إعادة ضبط", key="hub_pomo_reset"):
+                    st.session_state.pomo_running = False
+                    st.session_state.pomo_time_left = default_secs
+                    st.rerun()
+
+        # ---- Quick tasks ----
+        with hub_tabs[3]:
+            with st.form("hub_task_form", clear_on_submit=True):
+                hub_new_task = st.text_input(
+                    "أضف مهمة سريعة جديدة:", placeholder="مثال: تسليم البحث..."
+                )
+                hub_add = st.form_submit_button("➕ إضافة مهمة")
+            if hub_add and hub_new_task.strip():
+                st.session_state.quick_tasks.append(
+                    {"task": hub_new_task.strip(), "done": False}
+                )
+                st.rerun()
+
+            if st.session_state.quick_tasks:
+                for h_idx, h_task in enumerate(st.session_state.quick_tasks):
+                    st.session_state[f"hub_q_task_{h_idx}"] = h_task["done"]
+                    st.checkbox(
+                        h_task["task"],
+                        key=f"hub_q_task_{h_idx}",
+                        on_change=_hub_toggle_task,
+                        args=(h_idx,),
+                    )
+            else:
+                st.caption("لا توجد مهام حالياً.")
 
 # ==================================================
 # STEP 1: STUDENT PROFILE
