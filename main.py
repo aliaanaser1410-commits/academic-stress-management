@@ -159,7 +159,7 @@ def get_smart_bot_response(user_input):
     elif any(w in text for w in ["شكراً", "شكرا", "تسلم", "حلو"]):
         return "العفو! أنا دائماً هنا لمساعدتك. استمري في الإنجاز وجمع نقاط الـ XP! 🌟"
     else:
-        return f"سؤال ممتاز! للحصول على أفضل نتيجة، أنصحك بالالتزام بالجدول اليومي المقترح وتدوين يومياتك. هل تريد الاستفسار عن شيء آخر؟"
+        return "سؤال ممتاز! للحصول على أفضل نتيجة، أنصحك بالالتزام بالجدول اليومي المقترح وتدوين يومياتك. هل تريد الاستفسار عن شيء آخر؟"
 
 
 TRANSLATIONS = {
@@ -447,27 +447,27 @@ div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea {{ color:
     background: var(--accent);
     border: 1px solid var(--accent);
     color: #ffffff;
-}
+}}
 .stButton > button[kind="primary"]:hover,
 .stButton > button[data-testid="stBaseButton-primary"]:hover {{
     background: var(--accent-hover);
     border-color: var(--accent-hover);
     color: #ffffff;
-}
+}}
 .stButton > button[kind="secondary"],
 .stButton > button[data-testid="stBaseButton-secondary"],
 .stDownloadButton > button {{
     background: transparent;
     border: 1px solid var(--border-strong);
     color: var(--text);
-}
+}}
 .stButton > button[kind="secondary"]:hover,
 .stButton > button[data-testid="stBaseButton-secondary"]:hover,
 .stDownloadButton > button:hover {{
     background: var(--surface);
     border-color: var(--accent);
     color: #ffffff;
-}
+}}
 
 [data-testid="stDataFrame"] {{
     border: 1px solid var(--border);
