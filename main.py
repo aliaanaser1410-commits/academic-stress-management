@@ -2,6 +2,7 @@ import math
 from datetime import date, timedelta
 from pathlib import Path
 import time
+import random
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -55,7 +56,9 @@ defaults = {
     "workload": "Moderate",
     "subject_count": 3,
     "rest_days": [],
-    "xp_points": 0,  # Gamification XP
+    "xp_points": 0,
+    "daily_logs": [],
+    "quick_tasks": [],  # قائمة المهام السريعة
 }
 
 for key, value in defaults.items():
@@ -94,6 +97,15 @@ WORKLOAD_SCORES = {
 }
 
 ACCENT = "#6366f1"
+
+MOTIVATIONAL_TIPS = [
+    "✨ النجاح ليس صدفة، بل هو نتيجة العمل الجاد والالتزام المستمر.",
+    "💡 قسّم أهدافك الكبيرة إلى خطوات صغيرة يسهل إنجازها.",
+    "🌿 خذ قسطاً من الراحة عندما تحتاجه، فالعقل المريح يستوعب أكثر.",
+    "🎯 ابدأ بالمهام الصعبة أولاً وأنت بكامل طاقتك وركزك.",
+    "⭐ لا تتقن العظمة بين عشية وضحاها، بل بالاستمرارية اليومية.",
+    "💪 أنت قادرة على تحقيق أهدافك الدراسية وتجاوز كل الصعاب!"
+]
 
 
 def go_next():
@@ -451,7 +463,7 @@ hr { border-color: var(--border); margin: 1.6rem 0; }
 )
 
 # ==================================================
-# 5. SIDEBAR: POMODORO & GAMIFICATION STATS
+# 5. SIDEBAR: POMODORO, XP & QUICK TASKS
 # ==================================================
 with st.sidebar:
     st.markdown("### 🏆 لوحة إنجاز الطالب (XP)")
@@ -461,9 +473,50 @@ with st.sidebar:
     st.markdown(f"**المستوى الدراسي:** {current_rank}")
     st.markdown("---")
 
-    st.markdown("### ⏱️ مؤقت البومودورو للمذاكرة")
-    st.markdown("ركز لفترة قصيرة، ثم خذ استراحة قصيرة لتجديد نشاطك.")
+    # NEW FEATURE: QUICK TASKS (قائمة المهام السريعة)
+    st.markdown("### ✅ قائمة المهام السريعة")
+    new_task = st.text_input("أضف مهمة سريعة جديدة:", placeholder="مثال: تسليم البحث...")
+    if st.button("➕ إضافة مهمة"):
+        if new_task.strip():
+            st.session_state.quick_tasks.append({"task": new_task.strip(), "done": False})
+            st.rerun()
 
+    if st.session_state.quick_tasks:
+        st.markdown("#### المهام المعلقة:")
+        tasks_to_remove = []
+        for idx, t in enumerate(st.session_state.quick_tasks):
+            col_t1, col_t2 = st.columns([4, 1])
+            with col_t1:
+                is_checked = st.checkbox(t["task"], value=t["done"], key=f"q_task_{idx}")
+                if is_checked != t["done"]:
+                    st.session_state.quick_tasks[idx]["done"] = is_checked
+                    if is_checked:
+                        st.session_state.xp_points += 5
+                        st.toast("🌟 أحسنت! تم إنجاز مهمة سريعة (+5 XP).")
+            with col_t2:
+                if st.button("❌", key=f"del_task_{idx}"):
+                    tasks_to_remove.append(idx)
+        
+        if tasks_to_remove:
+            for idx in reversed(tasks_to_remove):
+                st.session_state.quick_tasks.pop(idx)
+            st.rerun()
+
+    st.markdown("---")
+
+    # NEW FEATURE: MOTIVATIONAL TIPS SECTION (قسم النصائح والإلهام)
+    st.markdown("### 💡 حصن الإلهام والنصائح")
+    if "current_tip" not in st.session_state:
+        st.session_state.current_tip = random.choice(MOTIVATIONAL_TIPS)
+    
+    st.info(st.session_state.current_tip)
+    if st.button("🔄 نصيحة جديدة"):
+        st.session_state.current_tip = random.choice(MOTIVATIONAL_TIPS)
+        st.rerun()
+
+    st.markdown("---")
+
+    st.markdown("### ⏱️ مؤقت البومودورو للمذاكرة")
     pomodoro_mode = st.radio(
         "وضع المؤقت",
         ["جلسة تركيز (25 دقيقة)", "استراحة قصيرة (5 دقائق)", "استراحة طويلة (15 دقيقة)"],
@@ -507,7 +560,7 @@ with st.sidebar:
         st.rerun()
     elif st.session_state.pomo_time_left == 0 and st.session_state.pomo_running:
         st.session_state.pomo_running = False
-        st.session_state.xp_points += 20  # Reward XP for finishing session
+        st.session_state.xp_points += 20
         st.success("🎉 انتهت الجلسة بنجاح! تم منحك +20 نقطة XP.")
 
     st.markdown("---")
@@ -899,7 +952,7 @@ elif current_step == 2:
             st.rerun()
 
 # ==================================================
-# STEP 4: RESULTS, PROGRESS DASHBOARD & DAY-BY-DAY SCHEDULE
+# STEP 4: RESULTS, DAILY REFLECTION LOG & SCHEDULE
 # ==================================================
 elif current_step == 3:
     saved = st.session_state.get("subjects_data", [])
@@ -963,9 +1016,43 @@ elif current_step == 3:
             f'<span class="unit">/ 10 · {level}</span></div></div>'
         )
 
-    # ==================================================
+    # DAILY STUDY REFLECTION LOG (يوميّة المذاكرة)
+    html('<div class="section-title">📝 يوميّة المتابعة اليومية (ماذا أخذت وذاكرت اليوم؟)</div>')
+    with st.form(key="daily_log_form"):
+        st.write("سجّل إنجازك اليومي لتبقى على اطلاع تام بمستواك:")
+        log_date = st.date_input("تاريخ اليوم", value=date.today())
+        
+        subj_list = [s["Subject"] for s in subjects_data]
+        selected_sub = st.selectbox("المادة الدراسية", options=subj_list)
+        
+        col_l1, col_l2 = st.columns(2)
+        with col_l1:
+            lectures_taken = st.number_input("عدد المحاضرات أو الفصول التي أخذتها اليوم:", min_value=0, max_value=10, value=1)
+        with col_l2:
+            lectures_studied = st.number_input("عدد المحاضرات أو الفصول التي ذاكرتها بالفعل:", min_value=0, max_value=10, value=1)
+
+        what_studied = st.text_area("ماذا ذاكرت اليوم بالتحديد؟ (أهم النقاط):")
+        what_not_studied = st.text_area("ماذا لم تذاكره اليوم وبقي مؤجلاً؟ (ولماذا؟):")
+
+        submit_log = st.form_submit_button("💾 حفظ السجل اليومي (+20 XP)")
+        if submit_log:
+            st.session_state.daily_logs.append({
+                "Date": str(log_date),
+                "Subject": selected_sub,
+                "Taken": lectures_taken,
+                "Studied": lectures_studied,
+                "Studied Notes": what_studied,
+                "Not Studied Notes": what_not_studied
+            })
+            st.session_state.xp_points += 20
+            st.success("✨ تم حفظ سجلك اليومي بنجاح وإضافة +20 نقطة XP إلى رصيدك!")
+
+    if st.session_state.daily_logs:
+        with st.expander("📖 عرض سجلات المذاكرة السابقة"):
+            logs_df = pd.DataFrame(st.session_state.daily_logs)
+            st.dataframe(logs_df, hide_index=True)
+
     # PROGRESS DASHBOARD (لوحة تتبع نسبة الإتمام)
-    # ==================================================
     html('<div class="section-title">📊 لوحة تتبع نسبة إتمام المناهج</div>')
     for sub in subjects_data:
         tot = sub["Total Chapters"]
@@ -1033,9 +1120,7 @@ elif current_step == 3:
         )
     st.dataframe(display_df, hide_index=True)
 
-    # ==================================================
     # SEPARATE DAY-BY-DAY SCHEDULE WITH CHECKBOXES & XP REWARD
-    # ==================================================
     html(
         '<div class="section-title">📅 الجدول اليومي المفصل (مع منح نقاط XP عند الإنجاز)</div>'
     )
@@ -1106,7 +1191,6 @@ elif current_step == 3:
 
                     checkbox_key = f"task_{day_offset}_{sub['Subject']}"
                     
-                    # Track previous state to reward XP only once per toggle
                     was_checked = st.session_state.get(f"prev_{checkbox_key}", False)
                     is_done = st.checkbox(
                         f"📚 مذاكرة مادة **{sub['Subject']}** — حوالي {chapters_to_cover} فصل/محاضرة ({round(allocated_hrs, 1)} ساعات)",
@@ -1114,7 +1198,7 @@ elif current_step == 3:
                     )
 
                     if is_done and not was_checked:
-                        st.session_state.xp_points += 15  # Gain 15 XP per completed task
+                        st.session_state.xp_points += 15
                         st.session_state[f"prev_{checkbox_key}"] = True
                         st.toast("🎉 أحسنتِ! تم إضافة +15 نقطة XP لرصيدك.", icon="⭐")
                     elif not is_done and was_checked:
