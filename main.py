@@ -55,6 +55,7 @@ defaults = {
     "workload": "Moderate",
     "subject_count": 3,
     "rest_days": [],
+    "xp_points": 0,  # Gamification XP
 }
 
 for key, value in defaults.items():
@@ -119,6 +120,17 @@ def stress_level(score):
     if score <= 6:
         return "Moderate", "#fbbf24"
     return "High", "#f87171"
+
+
+def get_student_rank(xp):
+    if xp < 50:
+        return "🐣 مبتدئ (Beginner)"
+    elif xp < 150:
+        return "🐥 متعلم مركز (Focused Learner)"
+    elif xp < 300:
+        return "🦉 بطل الدراسة (Study Champion)"
+    else:
+        return "🦅 أستاذ المذاكرة (Study Master)"
 
 
 TRANSLATIONS = {
@@ -213,7 +225,6 @@ TRANSLATIONS = {
     "Daily study distribution": "توزيع المذاكرة اليومية",
     "Hours per day": "ساعات يوميًا",
     "Suggested daily timetable": "الجدول اليومي المقترح لكل يوم",
-    "Study: ": "مذاكرة: ",
     "Short break": "استراحة قصيرة",
     "Long break / meal": "استراحة طويلة / وجبة",
     "Stress management tips": "نصائح لإدارة التوتر",
@@ -221,7 +232,6 @@ TRANSLATIONS = {
     "Review your notes regularly instead of cramming.": "راجع ملاحظاتك بانتظام بدلًا من المذاكرة المكثفة في آخر لحظة.",
     "Protect your sleep schedule and take regular breaks.": "حافظ على مواعيد نومك وخذ فترات راحة منتظمة.",
     "Break large tasks into smaller, manageable steps.": "قسّم المهام الكبيرة إلى خطوات صغيرة يمكن إنجازها.",
-    "Try 25 minutes of focused work followed by a 5-minute break.": "جرّب 25 دقيقة من التركيز ثم استراحة لمدة 5 دقائق.",
     "Export": "تصدير",
     "Download study plan": "تحميل خطة المذاكرة",
     "Download timetable": "تحميل الجدول اليومي",
@@ -441,9 +451,16 @@ hr { border-color: var(--border); margin: 1.6rem 0; }
 )
 
 # ==================================================
-# 5. SIDEBAR: POMODORO TIMER WIDGET
+# 5. SIDEBAR: POMODORO & GAMIFICATION STATS
 # ==================================================
 with st.sidebar:
+    st.markdown("### 🏆 لوحة إنجاز الطالب (XP)")
+    current_xp = st.session_state.get("xp_points", 0)
+    current_rank = get_student_rank(current_xp)
+    st.metric(label="نقاطك الحالية (XP)", value=current_xp)
+    st.markdown(f"**المستوى الدراسي:** {current_rank}")
+    st.markdown("---")
+
     st.markdown("### ⏱️ مؤقت البومودورو للمذاكرة")
     st.markdown("ركز لفترة قصيرة، ثم خذ استراحة قصيرة لتجديد نشاطك.")
 
@@ -453,7 +470,6 @@ with st.sidebar:
         index=0,
     )
 
-    # Map minutes
     if "25" in pomodoro_mode:
         default_secs = 25 * 60
     elif "5" in pomodoro_mode:
@@ -466,7 +482,6 @@ with st.sidebar:
     if "pomo_running" not in st.session_state:
         st.session_state.pomo_running = False
 
-    # Button controls
     col_s1, col_s2 = st.columns(2)
     with col_s1:
         if st.button("▶️ ابدأ"):
@@ -479,7 +494,6 @@ with st.sidebar:
         st.session_state.pomo_running = False
         st.session_state.pomo_time_left = default_secs
 
-    # Display Timer
     mins, secs = divmod(st.session_state.pomo_time_left, 60)
     timer_placeholder = st.empty()
     timer_placeholder.markdown(
@@ -493,7 +507,8 @@ with st.sidebar:
         st.rerun()
     elif st.session_state.pomo_time_left == 0 and st.session_state.pomo_running:
         st.session_state.pomo_running = False
-        st.success("🎉 انتهت الجلسة! خذ قسطاً من الراحة.")
+        st.session_state.xp_points += 20  # Reward XP for finishing session
+        st.success("🎉 انتهت الجلسة بنجاح! تم منحك +20 نقطة XP.")
 
     st.markdown("---")
 
@@ -884,7 +899,7 @@ elif current_step == 2:
             st.rerun()
 
 # ==================================================
-# STEP 4: RESULTS & SEPARATE DAY-BY-DAY SCHEDULE
+# STEP 4: RESULTS, PROGRESS DASHBOARD & DAY-BY-DAY SCHEDULE
 # ==================================================
 elif current_step == 3:
     saved = st.session_state.get("subjects_data", [])
@@ -948,6 +963,19 @@ elif current_step == 3:
             f'<span class="unit">/ 10 · {level}</span></div></div>'
         )
 
+    # ==================================================
+    # PROGRESS DASHBOARD (لوحة تتبع نسبة الإتمام)
+    # ==================================================
+    html('<div class="section-title">📊 لوحة تتبع نسبة إتمام المناهج</div>')
+    for sub in subjects_data:
+        tot = sub["Total Chapters"]
+        comp = sub["Completed Chapters"]
+        pct = int((comp / tot) * 100) if tot > 0 else 0
+        st.write(
+            f"**{sub['Subject']}** — الإنجاز: {comp}/{tot} فصل ({pct}%)"
+        )
+        st.progress(pct / 100)
+
     # Warnings
     total_needed_hours = sum(s["Total Required Hours"] for s in subjects_data)
     if total_needed_hours > total_hours:
@@ -1006,13 +1034,13 @@ elif current_step == 3:
     st.dataframe(display_df, hide_index=True)
 
     # ==================================================
-    # SEPARATE DAY-BY-DAY SCHEDULE WITH CHECKBOXES
+    # SEPARATE DAY-BY-DAY SCHEDULE WITH CHECKBOXES & XP REWARD
     # ==================================================
     html(
-        '<div class="section-title">📅 الجدول اليومي المفصل (جدول مستقل لكل يوم)</div>'
+        '<div class="section-title">📅 الجدول اليومي المفصل (مع منح نقاط XP عند الإنجاز)</div>'
     )
     st.write(
-        "يمكنك متابعة مهامك يومياً وتحديد ما تم إنجازه عبر مربعات الاختيار أدناه:"
+        "حدد المهام عند انتهائك منها لكسب نقاط XP ورفع مستواك الدراسي تلقائياً:"
     )
 
     rest_days = st.session_state.get("rest_days", [])
@@ -1077,10 +1105,21 @@ elif current_step == 3:
                     )
 
                     checkbox_key = f"task_{day_offset}_{sub['Subject']}"
+                    
+                    # Track previous state to reward XP only once per toggle
+                    was_checked = st.session_state.get(f"prev_{checkbox_key}", False)
                     is_done = st.checkbox(
                         f"📚 مذاكرة مادة **{sub['Subject']}** — حوالي {chapters_to_cover} فصل/محاضرة ({round(allocated_hrs, 1)} ساعات)",
                         key=checkbox_key,
                     )
+
+                    if is_done and not was_checked:
+                        st.session_state.xp_points += 15  # Gain 15 XP per completed task
+                        st.session_state[f"prev_{checkbox_key}"] = True
+                        st.toast("🎉 أحسنتِ! تم إضافة +15 نقطة XP لرصيدك.", icon="⭐")
+                    elif not is_done and was_checked:
+                        st.session_state.xp_points = max(0, st.session_state.xp_points - 15)
+                        st.session_state[f"prev_{checkbox_key}"] = False
 
                     hours_left_today -= allocated_hrs
                     sub["Remaining Chapters"] = max(
