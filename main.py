@@ -5,16 +5,6 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
-from database import init_database, save_profile
-from expert_system import generate_recommendations, get_study_adjustments
-
-# Initialize local SQLite tables. For durable cloud storage, configure
-# STUDENT_ASSISTANT_DB_PATH to a persistent mounted volume.
-try:
-    init_database()
-except Exception as db_error:
-    st.warning(f"Database initialization warning: {db_error}")
-
 # --------------------------------------------------
 # Theme config (written once, next to this file).
 # It makes sliders / focus rings use the accent colour.
@@ -844,65 +834,6 @@ elif current_step == 3:
         st.warning(
             tr("This timetable runs late into the evening. Consider reducing your daily hours or starting earlier to protect your sleep.")
         )
-
-    # ---- Explainable Expert System ----
-    html('<div class="section-title">Expert System Assessment</div>')
-    expert_profile = {
-        "stress": stress_score,
-        "focus": st.session_state.focus_score,
-        "study_hours": daily_hours,
-        "days_left": exam_days,
-        "workload": WORKLOAD_SCORES[st.session_state.workload],
-        # The current UI records sleep quality (0-10), not sleep duration.
-        # Do not treat that rating as hours slept; the sleep-duration rules
-        # remain inactive until a separate duration input is provided.
-    }
-
-    try:
-        save_profile({
-            "student_name": name,
-            "study_level": st.session_state.study_level,
-            **expert_profile,
-            "sleep_quality": st.session_state.sleep_score,
-        })
-    except Exception as db_error:
-        st.warning(f"Could not save student profile: {db_error}")
-
-    expert_results = generate_recommendations(expert_profile)
-    adjustments = get_study_adjustments(expert_profile)
-
-    if adjustments["activated_rule_ids"]:
-        st.caption(
-            "The rule engine matched the following conditions. "
-            "Certainty values are configured rule-strength estimates, not probabilities."
-        )
-    else:
-        st.caption("No configured rule was matched by the available answers.")
-
-    for item in expert_results:
-        with st.container(border=True):
-            title_col, level_col = st.columns([4, 1])
-            with title_col:
-                st.markdown(f"**{item['title']}**")
-                st.write(item["explanation"])
-                st.info(f"Recommended action: {item['recommendation']}")
-                st.caption(
-                    f"Rule: {item['rule_id']} · Evidence: {item['evidence']} · "
-                    f"Certainty factor: {item['certainty']:.0%}"
-                )
-            with level_col:
-                st.metric("Priority", item["level"])
-
-    st.markdown(
-        f"**Planner adjustment suggestion:** up to "
-        f"{adjustments['recommended_daily_hours']:.1f} study hours/day; "
-        f"{'use shorter sessions' if adjustments['short_sessions'] else 'keep a balanced session length'}; "
-        f"{'add extra breaks' if adjustments['extra_breaks'] else 'keep regular breaks'}."
-    )
-    st.caption(
-        "Academic organization support only. This system does not provide medical "
-        "diagnosis, and its certainty factors are heuristic values."
-    )
 
     # ---- Tips ----
     html('<div class="section-title">Stress management tips</div>')
