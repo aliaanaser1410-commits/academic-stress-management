@@ -599,20 +599,17 @@ with st.sidebar:
     st.markdown("---")
 
 # ==================================================
-# 5. FIXED NAVBAR & CONTROLS (زر فتح القائمة الجانبية + إعدادات اللغة والثيم)
+# 5. FIXED NAVBAR & CONTROLS (أزرار اللغة والثيم فقط بشكل منظم)
 # ==================================================
-nav_col1, nav_col2, nav_col3 = st.columns([1, 1, 1])
+nav_col1, nav_col2 = st.columns([1, 1])
 
 with nav_col1:
-    st.info("💡 لفتح أو إغلاق القائمة الجانبية، استخدم زر ( < أو > ) أعلى يسار أو يمين الشاشة، أو الزر أدناه.")
-
-with nav_col2:
     lang_label = "🌐 العربية" if st.session_state.language == "English" else "🌐 English"
     if st.button(lang_label, key="toggle_language", help="Switch interface language"):
         st.session_state.language = "Arabic" if st.session_state.language == "English" else "English"
         st.rerun()
 
-with nav_col3:
+with nav_col2:
     theme_label = "☀️ Light theme" if st.session_state.theme_mode == "Dark" else "🌙 Dark theme"
     if st.button(tr(theme_label), key="toggle_theme", help="Switch between dark and light themes"):
         st.session_state.theme_mode = "Light" if st.session_state.theme_mode == "Dark" else "Dark"
